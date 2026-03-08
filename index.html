@@ -232,7 +232,8 @@
       const [hostedFiles, setHostedFiles] = useState([]); // files being shared via link
       const [linkDragging, setLinkDragging] = useState(false);
       const [linkCopied, setLinkCopied] = useState(null); // id of file whose link was copied
-      const [isDownloading, setIsDownloading] = useState(false); // true when auto-downloading via link
+      const [isDownloading, setIsDownloading] = useState(false); // true while download in progress
+      const [isDownloadSession, setIsDownloadSession] = useState(false); // true if opened via #dl= link
       const [downloadProgress, setDownloadProgress] = useState(null);
 
       const peerRef = useRef(null);
@@ -339,6 +340,7 @@
           if (dlMatch) {
             const hostId = dlMatch[1];
             setIsDownloading(true);
+            setIsDownloadSession(true);
             setDownloadProgress('Connecting to host...');
             const conn = peer.connect(hostId, {
               metadata: { type: 'download-request' },
@@ -677,7 +679,7 @@
           </div>
 
           {/* Your ID card */}
-          <div style={{
+          {!isDownloadSession && <div style={{
             background:'var(--surface)', border:'1px solid var(--border)',
             borderRadius:16, padding:'22px 26px', marginBottom:20,
             animation:'fadeUp 0.5s ease 0.1s both'
@@ -713,10 +715,10 @@
                 </button>
               )}
             </div>
-          </div>
+          </div>}
 
           {/* Connect section */}
-          {status !== 'connected' && (
+          {!isDownloadSession && status !== 'connected' && (
             <div style={{
               background:'var(--surface)', border:'1px solid var(--border)',
               borderRadius:16, padding:'22px 26px', marginBottom:20,
@@ -907,7 +909,7 @@
           )}
 
           {/* ─── Download Link Section ─── */}
-          {!isDownloading && status !== 'connected' && (
+          {!isDownloadSession && status !== 'connected' && (
             <div style={{
               background:'var(--surface)', border:'1px solid var(--border)',
               borderRadius:16, padding:'22px 26px', marginBottom:20,
