@@ -273,15 +273,67 @@
 
       /* ─── Initialize PeerJS ─── */
       useEffect(() => {
-        // Check if URL has a download hash
+        // Check if URL has a hash action
         const hash = window.location.hash;
         const dlMatch = hash.match(/^#dl=(.+)$/);
+        const connectMatch = hash.match(/^#connect=(.+)$/);
 
         const id = generateId();
         const peer = new Peer(id);
 
         peer.on('open', (assignedId) => {
           setMyId(assignedId);
+
+          // If we have a connect link, auto-request connection
+          if (connectMatch) {
+            const targetId = connectMatch[1];
+            setPeerId(targetId);
+            setStatus('connecting');
+            const conn = peer.connect(targetId, {
+              metadata: { type: 'request', fromId: assignedId },
+              reliable: true
+            });
+            connRef.current = conn;
+            conn.on('open', () => {
+              setStatus('connected');
+              showToast('Connected! You can now send files.', 'success');
+            });
+            conn.on('data', (data) => {
+              if (data.type === 'file-meta') {
+                fileChunksRef.current[data.id] = {
+                  name: data.name, size: data.size,
+                  totalChunks: data.totalChunks, chunks: [], mimeType: data.mimeType
+                };
+                setReceiveProgress({ name: data.name, percent: 0 });
+              } else if (data.type === 'file-chunk') {
+                const fileBuild = fileChunksRef.current[data.id];
+                if (fileBuild) {
+                  fileBuild.chunks[data.index] = data.chunk;
+                  const received = fileBuild.chunks.filter(Boolean).length;
+                  setReceiveProgress({ name: fileBuild.name, percent: Math.round((received / fileBuild.totalChunks) * 100) });
+                  if (received === fileBuild.totalChunks) {
+                    const blob = new Blob(fileBuild.chunks, { type: fileBuild.mimeType });
+                    const url = URL.createObjectURL(blob);
+                    setTransfers(prev => [...prev, { name: fileBuild.name, size: fileBuild.size, url, direction: 'received' }]);
+                    setReceiveProgress(null);
+                    showToast(`Received: ${fileBuild.name}`, 'success');
+                    delete fileChunksRef.current[data.id];
+                  }
+                }
+              } else if (data.type === 'accept') {
+                setStatus('connected');
+                showToast('Connection accepted!', 'success');
+              } else if (data.type === 'reject') {
+                setStatus('idle');
+                showToast('Connection declined.', 'error');
+                connRef.current = null;
+              }
+            });
+            conn.on('close', () => { setStatus('idle'); connRef.current = null; showToast('Peer disconnected.', 'error'); });
+            conn.on('error', (err) => { console.error('Connection error:', err); showToast('Connection error.', 'error'); });
+            // Clean hash from URL
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+          }
 
           // If we have a download link, auto-connect to the host
           if (dlMatch) {
@@ -545,7 +597,8 @@
       };
 
       const copyId = () => {
-        navigator.clipboard.writeText(myId);
+        const link = `${window.location.origin}${window.location.pathname}#connect=${myId}`;
+        navigator.clipboard.writeText(link);
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       };
@@ -656,7 +709,7 @@
                   onMouseEnter={e => e.currentTarget.style.borderColor='var(--border-active)'}
                   onMouseLeave={e => e.currentTarget.style.borderColor='var(--border)'}
                 >
-                  {copied ? <><CheckIcon /> copied</> : <><CopyIcon /> copy</>}
+                  {copied ? <><CheckIcon /> copied</> : <><LinkIcon /> copy direct connect link</>}
                 </button>
               )}
             </div>
@@ -854,7 +907,7 @@
           )}
 
           {/* ─── Download Link Section ─── */}
-          {!isDownloading && (
+          {!isDownloading && status !== 'connected' && (
             <div style={{
               background:'var(--surface)', border:'1px solid var(--border)',
               borderRadius:16, padding:'22px 26px', marginBottom:20,
