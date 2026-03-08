@@ -225,7 +225,8 @@
       const [transfers, setTransfers] = useState([]);
       const [dragging, setDragging] = useState(false);
       const [copied, setCopied] = useState(false);
-      const [sendProgress, setSendProgress] = useState(null);
+      const [sendProgress, setSendProgress] = useState(null); // { name, percent }
+      const [receiveProgress, setReceiveProgress] = useState(null); // { name, percent }
 
       // Download link feature state
       const [hostedFiles, setHostedFiles] = useState([]); // files being shared via link
@@ -397,11 +398,14 @@
               chunks: [],
               mimeType: data.mimeType
             };
+            setReceiveProgress({ name: data.name, percent: 0 });
           } else if (data.type === 'file-chunk') {
             const fileBuild = fileChunksRef.current[data.id];
             if (fileBuild) {
               fileBuild.chunks[data.index] = data.chunk;
-              if (fileBuild.chunks.filter(Boolean).length === fileBuild.totalChunks) {
+              const received = fileBuild.chunks.filter(Boolean).length;
+              setReceiveProgress({ name: fileBuild.name, percent: Math.round((received / fileBuild.totalChunks) * 100) });
+              if (received === fileBuild.totalChunks) {
                 const blob = new Blob(fileBuild.chunks, { type: fileBuild.mimeType });
                 const url = URL.createObjectURL(blob);
                 setTransfers(prev => [...prev, {
@@ -410,6 +414,7 @@
                   url,
                   direction: 'received'
                 }]);
+                setReceiveProgress(null);
                 showToast(`Received: ${fileBuild.name}`, 'success');
                 delete fileChunksRef.current[data.id];
               }
@@ -492,21 +497,32 @@
           mimeType: file.type || 'application/octet-stream'
         });
 
+        setSendProgress({ name: file.name, percent: 0 });
+
         const reader = new FileReader();
         reader.onload = () => {
           const buffer = reader.result;
-          for (let i = 0; i < totalChunks; i++) {
-            const start = i * CHUNK_SIZE;
-            const end = Math.min(start + CHUNK_SIZE, file.size);
-            const chunk = buffer.slice(start, end);
-            conn.send({ type: 'file-chunk', id: fileId, index: i, chunk });
-          }
-          setTransfers(prev => [...prev, {
-            name: file.name,
-            size: file.size,
-            direction: 'sent'
-          }]);
-          showToast(`Sent: ${file.name}`, 'success');
+          let i = 0;
+          const sendNext = () => {
+            if (i < totalChunks) {
+              const start = i * CHUNK_SIZE;
+              const end = Math.min(start + CHUNK_SIZE, file.size);
+              const chunk = buffer.slice(start, end);
+              conn.send({ type: 'file-chunk', id: fileId, index: i, chunk });
+              i++;
+              setSendProgress({ name: file.name, percent: Math.round((i / totalChunks) * 100) });
+              setTimeout(sendNext, 0);
+            } else {
+              setSendProgress(null);
+              setTransfers(prev => [...prev, {
+                name: file.name,
+                size: file.size,
+                direction: 'sent'
+              }]);
+              showToast(`Sent: ${file.name}`, 'success');
+            }
+          };
+          sendNext();
         };
         reader.readAsArrayBuffer(file);
       };
@@ -660,7 +676,7 @@
               }}>
                 Connect to Peer
               </div>
-              <div style={{ display:'flex', gap:10 }}>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
                 <input
                   type="text"
                   value={peerId}
@@ -669,10 +685,10 @@
                   placeholder="enter peer id..."
                   disabled={status === 'connecting'}
                   style={{
-                    flex:1, padding:'11px 16px', borderRadius:10,
+                    flex:'1 1 180px', minWidth:0, padding:'11px 16px', borderRadius:10,
                     border:'1px solid var(--border)', background:'var(--bg)',
                     color:'var(--text)', fontFamily:"'DM Mono', monospace", fontSize:14,
-                    outline:'none', transition:'border-color 0.2s'
+                    outline:'none', transition:'border-color 0.2s', boxSizing:'border-box'
                   }}
                   onFocus={e => e.target.style.borderColor='var(--accent-dim)'}
                   onBlur={e => e.target.style.borderColor='var(--border)'}
@@ -681,12 +697,12 @@
                   onClick={requestConnection}
                   disabled={!peerId.trim() || status === 'connecting'}
                   style={{
-                    padding:'11px 24px', borderRadius:10,
+                    flex:'1 1 auto', padding:'11px 24px', borderRadius:10,
                     border:'1px solid var(--accent)',
                     background: status === 'connecting' ? 'var(--accent-dim)' : 'var(--accent)',
                     color:'#0a0a0c', fontFamily:"'Outfit', sans-serif",
                     fontSize:14, fontWeight:600, cursor: status === 'connecting' ? 'wait' : 'pointer',
-                    transition:'all 0.2s', whiteSpace:'nowrap'
+                    transition:'all 0.2s', whiteSpace:'nowrap', boxSizing:'border-box'
                   }}
                   onMouseEnter={e => { if(status !== 'connecting') e.target.style.background='#5dd4a6'; }}
                   onMouseLeave={e => { if(status !== 'connecting') e.target.style.background='var(--accent)'; }}
@@ -772,6 +788,69 @@
                 <input id="file-input" type="file" multiple style={{ display:'none' }} onChange={onFileSelect} />
               </div>
             </>
+          )}
+
+          {/* ─── Progress Bars ─── */}
+          {sendProgress && (
+            <div style={{
+              background:'var(--surface)', border:'1px solid rgba(99,102,241,0.4)',
+              borderRadius:14, padding:'16px 22px', marginBottom:20,
+              animation:'fadeUp 0.3s ease'
+            }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:10 }}>
+                <div style={{
+                  fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--text-dim)',
+                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'70%'
+                }}>
+                  ↑ Sending: {sendProgress.name}
+                </div>
+                <div style={{ fontFamily:"'DM Mono', monospace", fontSize:12, color:'#818cf8' }}>
+                  {sendProgress.percent}%
+                </div>
+              </div>
+              <div style={{
+                height:6, borderRadius:3, background:'var(--surface-2)',
+                overflow:'hidden'
+              }}>
+                <div style={{
+                  height:'100%', borderRadius:3,
+                  background:'linear-gradient(90deg, #818cf8, #a78bfa)',
+                  width: `${sendProgress.percent}%`,
+                  transition:'width 0.15s ease'
+                }} />
+              </div>
+            </div>
+          )}
+
+          {receiveProgress && (
+            <div style={{
+              background:'var(--surface)', border:'1px solid var(--accent-dim)',
+              borderRadius:14, padding:'16px 22px', marginBottom:20,
+              animation:'fadeUp 0.3s ease'
+            }}>
+              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:10 }}>
+                <div style={{
+                  fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--text-dim)',
+                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'70%'
+                }}>
+                  ↓ Receiving: {receiveProgress.name}
+                </div>
+                <div style={{ fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--accent)' }}>
+                  {receiveProgress.percent}%
+                </div>
+              </div>
+              <div style={{
+                height:6, borderRadius:3, background:'var(--surface-2)',
+                overflow:'hidden'
+              }}>
+                <div style={{
+                  height:'100%', borderRadius:3,
+                  background:'linear-gradient(90deg, var(--accent), #5dd4a6)',
+                  width: `${receiveProgress.percent}%`,
+                  transition:'width 0.15s ease'
+                }} />
+              </div>
+            </div>
           )}
 
           {/* ─── Download Link Section ─── */}
