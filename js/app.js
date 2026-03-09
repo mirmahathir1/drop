@@ -32,956 +32,79 @@ function App() {
   const storageWarningShownRef = useRef(false);
   const zipTaskIdRef = useRef(0);
   const zipBusyRef = useRef(false);
+  const statusRef = useRef(status);
+  const isDownloadingRef = useRef(isDownloading);
+  const qrModalRef = useRef(qrModal);
 
   const CHUNK_SIZE = 64 * 1024;
   const TRANSFER_STORAGE_DIR = 'drop-transfers';
+
+  transfersRef.current = transfers;
+  hostedFilesRef.current = hostedFiles;
+  statusRef.current = status;
+  isDownloadingRef.current = isDownloading;
+  qrModalRef.current = qrModal;
 
   function showToast(message, type) {
     setToast({ message: message, type: type || 'info', key: Date.now() });
   }
 
-  function percentFromBytes(bytes, total) {
-    if (!total || total <= 0) return 100;
-    return Math.min(100, Math.round((bytes / total) * 100));
-  }
-
-  function updateReceiveUi(fileBuild) {
-    var percent = percentFromBytes(fileBuild.receivedBytes, fileBuild.size);
-    var eta = formatEta(fileBuild.startTime, percent);
-
-    setReceiveProgress({ name: fileBuild.name, percent: percent, eta: eta });
-
-    if (fileBuild.mode === 'download') {
-      setDownloadProgress(
-        'Receiving: ' +
-          fileBuild.name +
-          ' (' +
-          percent +
-          '%' +
-          (eta ? ' · ' + eta + ' left' : '') +
-          ')'
-      );
-    }
-  }
-
-  function clearReceiveUi(fileBuild) {
-    if (currentReceiveFileIdRef.current === fileBuild.id) {
-      currentReceiveFileIdRef.current = null;
-      setReceiveProgress(null);
-    }
-
-    if (fileBuild.mode === 'download') {
-      setIsDownloading(false);
-      setDownloadProgress(null);
-    }
-  }
-
-  function clearTransferHistory() {
-    var transfers = transfersRef.current || [];
-
-    for (var i = 0; i < transfers.length; i++) {
-      if (transfers[i] && transfers[i].url) {
-        try {
-          URL.revokeObjectURL(transfers[i].url);
-        } catch (err) {}
-      }
-    }
-
-    transfersRef.current = [];
-    setTransfers([]);
-  }
-
-  function getSelectedFiles(fileList) {
-    return Array.prototype.slice.call(fileList || []).filter(function(file) {
-      return !!file && typeof file.size === 'number' && typeof file.name === 'string';
-    });
-  }
-
-  function totalSizeFromFiles(files) {
-    var total = 0;
-
-    for (var i = 0; i < files.length; i++) {
-      total += files[i].size || 0;
-    }
-
-    return total;
-  }
-
-  function describeSelection(selection) {
-    if (!selection || !selection.itemCount) return '0 items';
-    if (selection.folderCount === 1 && selection.itemCount === 1) return '1 folder';
-    if (selection.folderCount > 0) return selection.itemCount + ' items';
-    return selection.itemCount + ' files';
-  }
-
-  function finalizeSelection(selection) {
-    var next = selection || {
-      entries: [],
-      directories: [],
-      itemCount: 0,
-      folderCount: 0,
-      looseFileCount: 0,
-      topLevelNames: []
-    };
-
-    next.entries = next.entries || [];
-    next.directories = next.directories || [];
-    next.topLevelNames = next.topLevelNames || [];
-    next.itemCount = next.itemCount || next.topLevelNames.length;
-    next.folderCount = next.folderCount || 0;
-    next.looseFileCount = next.looseFileCount || 0;
-    next.isSinglePlainFile =
-      next.folderCount === 0 &&
-      next.looseFileCount === 1 &&
-      next.itemCount === 1 &&
-      next.entries.length === 1;
-    next.isSingleFolder =
-      next.folderCount === 1 &&
-      next.looseFileCount === 0 &&
-      next.itemCount === 1;
-
-    return next;
-  }
-
-  function buildSelectionFromFileList(fileList) {
-    var files = getSelectedFiles(fileList);
-    var selection = {
-      entries: [],
-      directories: [],
-      itemCount: 0,
-      folderCount: 0,
-      looseFileCount: 0,
-      topLevelNames: []
-    };
-    var folderRoots = {};
-
-    for (var i = 0; i < files.length; i++) {
-      var file = files[i];
-      var relativePath = file.webkitRelativePath || '';
-
-      if (relativePath && relativePath.indexOf('/') !== -1) {
-        var archivePath = normalizeArchivePath(relativePath, file.name);
-        var rootName = archivePath.split('/')[0];
-
-        selection.entries.push({
-          file: file,
-          archivePath: archivePath,
-          label: relativePath
-        });
-
-        if (!folderRoots[rootName]) {
-          folderRoots[rootName] = true;
-          selection.folderCount += 1;
-          selection.itemCount += 1;
-          selection.topLevelNames.push(rootName);
-        }
-      } else {
-        selection.entries.push({
-          file: file,
-          archivePath: normalizeArchivePath(file.name, file.name),
-          label: file.name
-        });
-        selection.looseFileCount += 1;
-        selection.itemCount += 1;
-        selection.topLevelNames.push(file.name);
-      }
-    }
-
-    return finalizeSelection(selection);
-  }
-
-  function getDataTransferItemEntry(item) {
-    if (!item) return null;
-    if (typeof item.getAsEntry === 'function') return item.getAsEntry();
-    if (typeof item.webkitGetAsEntry === 'function') return item.webkitGetAsEntry();
-    return null;
-  }
-
-  function readFileFromEntry(entry) {
-    return new Promise(function(resolve, reject) {
-      entry.file(resolve, reject);
-    });
-  }
-
-  function readAllDirectoryEntries(reader) {
-    return new Promise(function(resolve, reject) {
-      var entries = [];
-
-      function readBatch() {
-        reader.readEntries(
-          function(batch) {
-            if (!batch || !batch.length) {
-              resolve(entries);
-              return;
-            }
-
-            entries = entries.concat(Array.prototype.slice.call(batch));
-            readBatch();
-          },
-          function(err) {
-            reject(err);
-          }
-        );
-      }
-
-      readBatch();
-    });
-  }
-
-  async function collectDroppedEntry(entry, parentPath, selection) {
-    var nextPath = parentPath ? parentPath + '/' + entry.name : entry.name;
-
-    if (entry.isDirectory) {
-      selection.directories.push(normalizeArchivePath(nextPath, entry.name));
-
-      var children = await readAllDirectoryEntries(entry.createReader());
-      for (var i = 0; i < children.length; i++) {
-        await collectDroppedEntry(children[i], nextPath, selection);
-      }
-      return;
-    }
-
-    if (!entry.isFile) return;
-
-    var file = await readFileFromEntry(entry);
-    selection.entries.push({
-      file: file,
-      archivePath: normalizeArchivePath(nextPath, file.name),
-      label: nextPath
-    });
-  }
-
-  async function buildSelectionFromDrop(dataTransfer) {
-    var items = Array.prototype.slice.call((dataTransfer && dataTransfer.items) || []).filter(function(item) {
-      return item && item.kind === 'file';
-    });
-    var droppedEntries = [];
-
-    for (var i = 0; i < items.length; i++) {
-      var entry = getDataTransferItemEntry(items[i]);
-      if (entry) {
-        droppedEntries.push(entry);
-      }
-    }
-
-    if (!droppedEntries.length) {
-      return buildSelectionFromFileList(dataTransfer && dataTransfer.files);
-    }
-
-    var selection = {
-      entries: [],
-      directories: [],
-      itemCount: 0,
-      folderCount: 0,
-      looseFileCount: 0,
-      topLevelNames: []
-    };
-
-    for (var j = 0; j < droppedEntries.length; j++) {
-      var droppedEntry = droppedEntries[j];
-
-      selection.itemCount += 1;
-      selection.topLevelNames.push(droppedEntry.name || 'item');
-
-      if (droppedEntry.isDirectory) {
-        selection.folderCount += 1;
-      } else {
-        selection.looseFileCount += 1;
-      }
-
-      await collectDroppedEntry(droppedEntry, '', selection);
-    }
-
-    return finalizeSelection(selection);
-  }
-
-  async function buildSelectionFile(selection, action) {
-    var nextSelection = finalizeSelection(selection);
-
-    if (!nextSelection.entries.length && !nextSelection.directories.length) {
-      showToast('No files were found in that selection.', 'error');
-      return null;
-    }
-
-    if (nextSelection.isSinglePlainFile) {
-      return {
-        file: nextSelection.entries[0].file,
-        sourceCount: 1,
-        folderCount: 0
-      };
-    }
-
-    if (!window.JSZip || typeof window.JSZip !== 'function') {
-      showToast('Zip support is unavailable right now. Refresh and try again.', 'error');
-      return null;
-    }
-
-    if (zipBusyRef.current) {
-      showToast('A zip archive is already being prepared.', 'info');
-      return null;
-    }
-
-    var archiveName = nextSelection.isSingleFolder
-      ? buildNamedArchiveFileName(nextSelection.topLevelNames[0])
-      : buildArchiveFileName(
-          nextSelection.itemCount || nextSelection.entries.length || 1,
-          nextSelection.folderCount > 0 ? 'items' : 'files'
-        );
-    var totalBytes = totalSizeFromFiles(
-      nextSelection.entries.map(function(entry) { return entry.file; })
-    );
-    var jobId = ++zipTaskIdRef.current;
-    var zip = new window.JSZip();
-    var usedNames = {};
-    var directories = nextSelection.directories.slice().sort(function(a, b) {
-      return a.length - b.length;
-    });
-
-    zipBusyRef.current = true;
-    setZipProgress({
-      action: action,
-      name: archiveName,
-      sourceLabel: describeSelection(nextSelection),
-      totalBytes: totalBytes,
-      percent: 0,
-      currentFile: nextSelection.entries[0]
-        ? nextSelection.entries[0].label
-        : nextSelection.topLevelNames[0] || archiveName
-    });
-
-    try {
-      for (var d = 0; d < directories.length; d++) {
-        zip.folder(directories[d]);
-      }
-
-      for (var f = 0; f < nextSelection.entries.length; f++) {
-        var sourceEntry = nextSelection.entries[f];
-        zip.file(
-          ensureUniqueArchiveEntryName(sourceEntry.archivePath, usedNames),
-          sourceEntry.file,
-          { binary: true }
-        );
-      }
-
-      var blob = await zip.generateAsync(
-        {
-          type: 'blob',
-          compression: 'DEFLATE',
-          compressionOptions: { level: 6 }
-        },
-        function(metadata) {
-          if (zipTaskIdRef.current !== jobId) return;
-
-          setZipProgress({
-            action: action,
-            name: archiveName,
-            sourceLabel: describeSelection(nextSelection),
-            totalBytes: totalBytes,
-            percent: Math.max(1, Math.min(100, Math.round(metadata.percent || 0))),
-            currentFile: metadata.currentFile || ''
-          });
-        }
-      );
-
-      var archiveFile;
-
-      try {
-        archiveFile = new File([blob], archiveName, {
-          type: 'application/zip',
-          lastModified: Date.now()
-        });
-      } catch (fileErr) {
-        archiveFile = blob;
-        archiveFile.name = archiveName;
-        archiveFile.lastModified = Date.now();
-      }
-
-      return {
-        file: archiveFile,
-        sourceCount: nextSelection.itemCount,
-        folderCount: nextSelection.folderCount
-      };
-    } catch (err) {
-      console.error('Failed to create zip archive:', err);
-      showToast('Failed to create the zip archive.', 'error');
-      return null;
-    } finally {
-      if (zipTaskIdRef.current === jobId) {
-        zipBusyRef.current = false;
-        setZipProgress(null);
-      }
-    }
-  }
-
-  async function getTransferDirectory(createIfMissing) {
-    if (!navigator.storage || !navigator.storage.getDirectory) return null;
-
-    if (!storageRootRef.current) {
-      storageRootRef.current = navigator.storage.getDirectory();
-    }
-
-    var root = await storageRootRef.current;
-    return root.getDirectoryHandle(TRANSFER_STORAGE_DIR, { create: createIfMissing !== false });
-  }
-
-  async function createIncomingStore(fileId, name) {
-    if (!navigator.storage || !navigator.storage.getDirectory) {
-      if (!storageWarningShownRef.current) {
-        storageWarningShownRef.current = true;
-        showToast('Disk-backed receive is unavailable in this browser. Falling back to memory.', 'info');
-      }
-      return { mode: 'memory', chunks: [] };
-    }
-
-    try {
-      var dir = await getTransferDirectory(true);
-      var tempName = fileId + '-' + sanitizeFileName(name);
-      var fileHandle = await dir.getFileHandle(tempName, { create: true });
-      var writable = await fileHandle.createWritable();
-
-      return {
-        mode: 'disk',
-        dir: dir,
-        tempName: tempName,
-        fileHandle: fileHandle,
-        writable: writable
-      };
-    } catch (err) {
-      console.error('Failed to create disk-backed store:', err);
-      if (!storageWarningShownRef.current) {
-        storageWarningShownRef.current = true;
-        showToast('Disk-backed receive failed. Falling back to memory.', 'info');
-      }
-      return { mode: 'memory', chunks: [] };
-    }
-  }
-
-  async function discardIncomingStore(fileBuild) {
-    if (!fileBuild || fileBuild.storageMode !== 'disk') return;
-
-    var writable = fileBuild.writable;
-    fileBuild.writable = null;
-
-    try {
-      if (writable) {
-        await writable.abort();
-      }
-    } catch (err) {}
-
-    try {
-      var dir = fileBuild.dir || (await getTransferDirectory(false));
-      if (dir) {
-        await dir.removeEntry(fileBuild.tempName);
-      }
-    } catch (err) {}
-  }
-
-  async function cleanupConnectionTransfers(conn) {
-    var incomingIds = Object.keys(incomingTransfersRef.current);
-    for (var i = 0; i < incomingIds.length; i++) {
-      var incoming = incomingTransfersRef.current[incomingIds[i]];
-      if (incoming && incoming.conn === conn && !incoming.completed) {
-        await cancelIncomingTransfer(incoming.id, null);
-      }
-    }
-
-    var outgoingIds = Object.keys(outgoingTransfersRef.current);
-    for (var j = 0; j < outgoingIds.length; j++) {
-      var outgoing = outgoingTransfersRef.current[outgoingIds[j]];
-      if (outgoing && outgoing.conn === conn && !outgoing.completed) {
-        cancelOutgoingTransfer(outgoing.id, null);
-      }
-    }
-  }
-
-  async function prepareIncomingTransfer(conn, data, mode) {
-    if (incomingTransfersRef.current[data.id]) {
-      await cancelIncomingTransfer(data.id, null);
-    }
-
-    var store = await createIncomingStore(data.id, data.name);
-    var fileBuild = {
-      id: data.id,
-      conn: conn,
-      mode: mode,
-      name: data.name,
-      size: data.size || 0,
-      totalChunks: data.totalChunks || 0,
-      mimeType: data.mimeType || 'application/octet-stream',
-      startTime: Date.now(),
-      receivedBytes: 0,
-      receivedChunks: 0,
-      storageMode: store.mode,
-      chunks: store.chunks || [],
-      dir: store.dir || null,
-      tempName: store.tempName || null,
-      fileHandle: store.fileHandle || null,
-      writable: store.writable || null,
-      completed: false
-    };
-
-    incomingTransfersRef.current[data.id] = fileBuild;
-    currentReceiveFileIdRef.current = data.id;
-    setReceiveProgress({ name: data.name, percent: 0, eta: '' });
-
-    if (mode === 'download') {
-      setIsDownloading(true);
-      setDownloadProgress('Preparing receive: ' + data.name);
-    }
-
-    conn.send({ type: 'file-ready', id: data.id });
-  }
-
-  async function appendIncomingChunk(conn, data) {
-    var fileBuild = incomingTransfersRef.current[data.id];
-    if (!fileBuild) return;
-
-    try {
-      if (fileBuild.storageMode === 'disk' && fileBuild.writable) {
-        await fileBuild.writable.write(data.chunk);
-      } else {
-        fileBuild.chunks.push(data.chunk);
-      }
-
-      var chunkBytes =
-        data.chunk && typeof data.chunk.byteLength === 'number'
-          ? data.chunk.byteLength
-          : data.chunk && typeof data.chunk.size === 'number'
-            ? data.chunk.size
-            : 0;
-
-      fileBuild.receivedBytes = Math.min(fileBuild.size, fileBuild.receivedBytes + chunkBytes);
-      fileBuild.receivedChunks += 1;
-      updateReceiveUi(fileBuild);
-
-      conn.send({
-        type: 'file-ack',
-        id: data.id,
-        receivedBytes: fileBuild.receivedBytes,
-        receivedChunks: fileBuild.receivedChunks
-      });
-    } catch (err) {
-      console.error('Failed to write incoming chunk:', err);
-      await cancelIncomingTransfer(data.id, 'Failed to write the incoming file.');
-      try {
-        conn.send({ type: 'file-cancel', id: data.id });
-      } catch (sendErr) {}
-    }
-  }
-
-  async function finalizeIncomingTransfer(fileId) {
-    var fileBuild = incomingTransfersRef.current[fileId];
-    if (!fileBuild || fileBuild.completed) return;
-
-    fileBuild.completed = true;
-
-    try {
-      var transferRecord;
-
-      if (fileBuild.storageMode === 'disk' && fileBuild.fileHandle) {
-        if (fileBuild.writable) {
-          await fileBuild.writable.close();
-          fileBuild.writable = null;
-        }
-
-        transferRecord = {
-          name: fileBuild.name,
-          size: fileBuild.size,
-          fileHandle: fileBuild.fileHandle,
-          direction: 'received'
-        };
-      } else {
-        var blob = new Blob(fileBuild.chunks, { type: fileBuild.mimeType });
-        transferRecord = {
-          name: fileBuild.name,
-          size: fileBuild.size,
-          url: URL.createObjectURL(blob),
-          direction: 'received'
-        };
-      }
-
-      setTransfers(function(prev) { return prev.concat([transferRecord]); });
-      clearReceiveUi(fileBuild);
-
-      if (fileBuild.mode === 'download') {
-        await downloadTransferFile(transferRecord);
-        history.replaceState(null, '', window.location.pathname + window.location.search);
-        showToast('Downloaded: ' + fileBuild.name, 'success');
-      } else {
-        showToast('Received: ' + fileBuild.name, 'success');
-      }
-    } catch (err) {
-      console.error('Failed to finalize incoming transfer:', err);
-      clearReceiveUi(fileBuild);
-      showToast('Failed to finalize the file.', 'error');
-      await discardIncomingStore(fileBuild);
-    }
-
-    delete incomingTransfersRef.current[fileId];
-  }
-
-  async function cancelIncomingTransfer(fileId, message) {
-    var fileBuild = incomingTransfersRef.current[fileId];
-    if (!fileBuild) return;
-    if (fileBuild.completed) return;
-
-    delete incomingTransfersRef.current[fileId];
-    clearReceiveUi(fileBuild);
-    await discardIncomingStore(fileBuild);
-
-    if (message) {
-      showToast(message, 'error');
-    }
-  }
-
-  function startOutgoingTransfer(conn, file, options) {
-    var settings = options || {};
-    var fileId = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    var totalChunks = Math.ceil(file.size / CHUNK_SIZE);
-
-    outgoingTransfersRef.current[fileId] = {
-      id: fileId,
-      conn: conn,
-      file: file,
-      name: file.name,
-      size: file.size,
-      mimeType: file.type || 'application/octet-stream',
-      totalChunks: totalChunks,
-      nextIndex: 0,
-      confirmedBytes: 0,
-      startTime: Date.now(),
-      awaitingAck: false,
-      sending: false,
-      completed: false,
-      cancelled: false,
-      trackProgress: !!settings.trackProgress
-    };
-
-    if (settings.trackProgress) {
-      currentSendFileIdRef.current = fileId;
-      setSendProgress({ name: file.name, percent: 0, eta: '' });
-    }
-
-    conn.send({
-      type: 'file-meta',
-      id: fileId,
-      name: file.name,
-      size: file.size,
-      totalChunks: totalChunks,
-      mimeType: file.type || 'application/octet-stream'
-    });
-
-    return fileId;
-  }
-
-  async function sendNextOutgoingChunk(fileId) {
-    var transfer = outgoingTransfersRef.current[fileId];
-    if (!transfer || transfer.cancelled || transfer.sending || transfer.awaitingAck) return;
-
-    if (transfer.nextIndex >= transfer.totalChunks) {
-      completeOutgoingTransfer(fileId);
-      return;
-    }
-
-    transfer.sending = true;
-
-    try {
-      var start = transfer.nextIndex * CHUNK_SIZE;
-      var end = Math.min(start + CHUNK_SIZE, transfer.size);
-      var chunk = await transfer.file.slice(start, end).arrayBuffer();
-
-      var freshTransfer = outgoingTransfersRef.current[fileId];
-      if (!freshTransfer || freshTransfer.cancelled) return;
-
-      freshTransfer.conn.send({
-        type: 'file-chunk',
-        id: fileId,
-        index: freshTransfer.nextIndex,
-        chunk: chunk
-      });
-
-      freshTransfer.nextIndex += 1;
-      freshTransfer.awaitingAck = true;
-    } catch (err) {
-      console.error('Failed to send chunk:', err);
-      cancelOutgoingTransfer(fileId, 'Failed to read the file for sending.');
-      try {
-        transfer.conn.send({ type: 'file-cancel', id: fileId });
-      } catch (sendErr) {}
-    } finally {
-      var current = outgoingTransfersRef.current[fileId];
-      if (current) {
-        current.sending = false;
-      }
-    }
-  }
-
-  function completeOutgoingTransfer(fileId) {
-    var transfer = outgoingTransfersRef.current[fileId];
-    if (!transfer || transfer.completed || transfer.cancelled) return;
-
-    transfer.completed = true;
-    transfer.conn.send({ type: 'file-complete', id: fileId });
-
-    if (transfer.trackProgress) {
-      setSendProgress(null);
-      currentSendFileIdRef.current = null;
-      setTransfers(function(prev) {
-        return prev.concat([{ name: transfer.name, size: transfer.size, direction: 'sent' }]);
-      });
-      showToast('Sent: ' + transfer.name, 'success');
-    }
-
-    delete outgoingTransfersRef.current[fileId];
-  }
-
-  function handleOutgoingAck(data) {
-    var transfer = outgoingTransfersRef.current[data.id];
-    if (!transfer || transfer.cancelled) return;
-
-    transfer.awaitingAck = false;
-    transfer.confirmedBytes = typeof data.receivedBytes === 'number' ? data.receivedBytes : transfer.confirmedBytes;
-
-    if (transfer.trackProgress) {
-      var percent = percentFromBytes(transfer.confirmedBytes, transfer.size);
-      setSendProgress({
-        name: transfer.name,
-        percent: percent,
-        eta: formatEta(transfer.startTime, percent)
-      });
-    }
-
-    if (transfer.nextIndex >= transfer.totalChunks) {
-      completeOutgoingTransfer(data.id);
-      return;
-    }
-
-    sendNextOutgoingChunk(data.id);
-  }
-
-  function cancelOutgoingTransfer(fileId, message) {
-    var transfer = outgoingTransfersRef.current[fileId];
-    if (!transfer) return;
-    if (transfer.completed) return;
-
-    delete outgoingTransfersRef.current[fileId];
-
-    if (currentSendFileIdRef.current === fileId) {
-      currentSendFileIdRef.current = null;
-      setSendProgress(null);
-    }
-
-    if (message) {
-      showToast(message, 'error');
-    }
-  }
-
-  async function handleData(conn, data, mode) {
-    if (data.type === 'file-meta') {
-      await prepareIncomingTransfer(conn, data, mode);
-      return;
-    }
-
-    if (data.type === 'file-ready') {
-      sendNextOutgoingChunk(data.id);
-      return;
-    }
-
-    if (data.type === 'file-chunk') {
-      await appendIncomingChunk(conn, data);
-      return;
-    }
-
-    if (data.type === 'file-ack') {
-      handleOutgoingAck(data);
-      return;
-    }
-
-    if (data.type === 'file-complete') {
-      await finalizeIncomingTransfer(data.id);
-      return;
-    }
-
-    if (data.type === 'file-cancel') {
-      if (incomingTransfersRef.current[data.id]) {
-        await cancelIncomingTransfer(data.id, 'Transfer cancelled by peer.');
-      }
-      if (outgoingTransfersRef.current[data.id]) {
-        cancelOutgoingTransfer(data.id, 'Transfer cancelled by peer.');
-      }
-      return;
-    }
-
-  }
-
-  function setupConn(conn, mode) {
-    connRef.current = conn;
-    conn.on('open', function() {
-      setStatus('connected');
-      showToast('Connected! You can now send files.', 'success');
-    });
-    conn.on('data', function(data) { handleData(conn, data, mode); });
-    conn.on('close', function() {
-      cleanupConnectionTransfers(conn);
-      clearTransferHistory();
-      setStatus('idle');
-      connRef.current = null;
-      showToast('Peer disconnected.', 'error');
-    });
-    conn.on('error', function(err) {
-      console.error('Connection error:', err);
-      showToast('Connection error.', 'error');
-    });
-  }
-
-  function showQrCode(title, value, subtitle, qrValue) {
-    if (!value) return;
-    setQrModal({ title: title, value: value, subtitle: subtitle || '', qrValue: qrValue || value });
-  }
-
-  async function copyQrValue() {
-    if (!qrModal) return;
-    try {
-      await copyTextToClipboard(qrModal.value);
-      showToast('Link copied.', 'success');
-    } catch (err) {
-      console.error('Failed to copy QR value:', err);
-      showToast('Could not copy the link on this browser.', 'error');
-    }
-  }
-
-  function startDirectConnection(targetId, options) {
-    var settings = options || {};
-    var nextPeerId = (targetId || '').trim();
-    var peer = peerRef.current;
-    var currentPeerId = settings.fromId || (peer && peer.id) || myId;
-
-    if (!nextPeerId || !peer) return false;
-
-    if (currentPeerId && nextPeerId === currentPeerId) {
-      showToast('That link points back to this browser.', 'info');
-      return false;
-    }
-
-    if (status === 'connecting') {
-      showToast('Already connecting to a peer.', 'info');
-      return false;
-    }
-
-    if (connRef.current && connRef.current.open) {
-      showToast('Disconnect before starting another direct connection.', 'info');
-      return false;
-    }
-
-    setPeerId(nextPeerId);
-    setStatus('connecting');
-
-    var conn = peer.connect(nextPeerId, {
-      metadata: { type: 'direct', fromId: currentPeerId },
-      reliable: true
-    });
-
-    setupConn(conn, 'direct');
-    return true;
-  }
-
-  function startHostedDownload(hostId, options) {
-    var settings = options || {};
-    var nextHostId = (hostId || '').trim();
-    var nextFileId = (settings.fileId || '').trim();
-    var peer = peerRef.current;
-    var currentPeerId = (peer && peer.id) || myId;
-
-    if (!nextHostId || !peer) return false;
-
-    if (currentPeerId && nextHostId === currentPeerId) {
-      showToast('That download link points back to this browser.', 'info');
-      return false;
-    }
-
-    if (isDownloading) {
-      showToast('A download is already in progress.', 'info');
-      return false;
-    }
-
-    if (settings.downloadSession) {
-      setIsDownloadSession(true);
-    }
-
-    setIsDownloading(true);
-    setDownloadProgress('Connecting to host...');
-
-    var dlConn = peer.connect(nextHostId, {
-      metadata: { type: 'download-request', fileId: nextFileId || null },
-      reliable: true
-    });
-
-    dlConn.on('open', function() {
-      setDownloadProgress('Connected. Waiting for file...');
-    });
-
-    dlConn.on('data', function(data) {
-      handleData(dlConn, data, 'download');
-    });
-
-    dlConn.on('error', function(err) {
-      console.error('Download connection error:', err);
-      cleanupConnectionTransfers(dlConn);
-      setReceiveProgress(null);
-      setDownloadProgress(null);
-      setIsDownloading(false);
-      showToast('Failed to connect to host. The link may have expired.', 'error');
-    });
-
-    dlConn.on('close', function() {
-      cleanupConnectionTransfers(dlConn);
-      if (currentReceiveFileIdRef.current) {
-        setReceiveProgress(null);
-        showToast('Download interrupted.', 'error');
-      }
-      setDownloadProgress(null);
-      setIsDownloading(false);
-    });
-
-    return true;
-  }
-
-  function handleScannerResult(value) {
-    var parsed = parseDropLink(value);
-
-    setScannerOpen(false);
-
-    if (!parsed) {
-      showToast('That QR code is not a valid Drop link.', 'error');
-      return;
-    }
-
-    if (parsed.type === 'download') {
-      if (startHostedDownload(parsed.id, { downloadSession: false, fileId: parsed.fileId })) {
-        showToast('Download link scanned. Connecting...', 'info');
-      }
-      return;
-    }
-
-    if (startDirectConnection(parsed.id)) {
-      showToast('Peer link scanned. Connecting...', 'info');
-    }
-  }
-
-  useEffect(function() {
-    transfersRef.current = transfers;
-  }, [transfers]);
-
-  useEffect(function() {
-    hostedFilesRef.current = hostedFiles;
-  }, [hostedFiles]);
+  var selectionController = DropApp.createSelectionController({
+    showToast: showToast,
+    setZipProgress: setZipProgress,
+    zipTaskIdRef: zipTaskIdRef,
+    zipBusyRef: zipBusyRef
+  });
+
+  var transferController = DropApp.createTransferManager({
+    chunkSize: CHUNK_SIZE,
+    transferStorageDir: TRANSFER_STORAGE_DIR,
+    showToast: showToast,
+    setTransfers: setTransfers,
+    setSendProgress: setSendProgress,
+    setReceiveProgress: setReceiveProgress,
+    setIsDownloading: setIsDownloading,
+    setDownloadProgress: setDownloadProgress,
+    incomingTransfersRef: incomingTransfersRef,
+    outgoingTransfersRef: outgoingTransfersRef,
+    transfersRef: transfersRef,
+    currentSendFileIdRef: currentSendFileIdRef,
+    currentReceiveFileIdRef: currentReceiveFileIdRef,
+    storageRootRef: storageRootRef,
+    storageWarningShownRef: storageWarningShownRef
+  });
+
+  var peerController = DropApp.createPeerController({
+    getMyId: function() { return myId; },
+    getStatus: function() { return statusRef.current; },
+    getIsDownloading: function() { return isDownloadingRef.current; },
+    getQrModal: function() { return qrModalRef.current; },
+    showToast: showToast,
+    setMyId: setMyId,
+    setPeerId: setPeerId,
+    setStatus: setStatus,
+    setReceiveProgress: setReceiveProgress,
+    setIsDownloading: setIsDownloading,
+    setIsDownloadSession: setIsDownloadSession,
+    setDownloadProgress: setDownloadProgress,
+    setQrModal: setQrModal,
+    setScannerOpen: setScannerOpen,
+    peerRef: peerRef,
+    connRef: connRef,
+    hostedFilesRef: hostedFilesRef,
+    currentReceiveFileIdRef: currentReceiveFileIdRef,
+    clearTransferHistory: transferController.clearTransferHistory,
+    cleanupConnectionTransfers: transferController.cleanupConnectionTransfers,
+    handleData: transferController.handleData,
+    startOutgoingTransfer: transferController.startOutgoingTransfer
+  });
 
   useEffect(function() {
     var cancelled = false;
 
     (async function() {
       try {
-        var dir = await getTransferDirectory(false);
+        var dir = await transferController.getTransferDirectory(false);
         if (!dir || typeof dir.values !== 'function') return;
 
         for await (var entry of dir.values()) {
@@ -998,87 +121,12 @@ function App() {
     };
   }, []);
 
-  /* Initialize PeerJS */
   useEffect(function() {
-    var launchAction = parseDropLink(window.location.hash);
-    var id = generateId();
-    var peer = new Peer(id);
-    peerRef.current = peer;
-
-    peer.on('open', function(assignedId) {
-      setMyId(assignedId);
-
-      if (launchAction && launchAction.type === 'connect') {
-        startDirectConnection(launchAction.id, { fromId: assignedId });
-        history.replaceState(null, '', window.location.pathname + window.location.search);
-      }
-
-      if (launchAction && launchAction.type === 'download') {
-        startHostedDownload(launchAction.id, { downloadSession: true, fileId: launchAction.fileId });
-      }
-    });
-
-    peer.on('connection', function(conn) {
-      if (conn.metadata && conn.metadata.type === 'download-request') {
-        conn.on('open', function() {
-          var files = hostedFilesRef.current;
-          var requestedFileId = conn.metadata && conn.metadata.fileId;
-          var fileToSend = null;
-
-          if (requestedFileId) {
-            for (var i = 0; i < files.length; i++) {
-              if (files[i].id === requestedFileId) {
-                fileToSend = files[i];
-                break;
-              }
-            }
-          }
-
-          if (!fileToSend && files.length > 0) {
-            fileToSend = files[0];
-          }
-
-          if (fileToSend) {
-            startOutgoingTransfer(conn, fileToSend.file, { trackProgress: false });
-          } else {
-            conn.close();
-          }
-        });
-
-        conn.on('data', function(data) {
-          handleData(conn, data, 'hosted-source');
-        });
-
-        conn.on('close', function() {
-          cleanupConnectionTransfers(conn);
-        });
-
-        conn.on('error', function(err) {
-          console.error('Hosted download error:', err);
-          cleanupConnectionTransfers(conn);
-        });
-      } else if (conn.metadata && conn.metadata.type === 'direct') {
-        setupConn(conn, 'direct');
-      }
-    });
-
-    peer.on('error', function(err) {
-      console.error('Peer error:', err);
-      if (err.type === 'peer-unavailable') {
-        showToast('Peer not found. Check the ID and try again.', 'error');
-        setStatus('idle');
-        setIsDownloading(false);
-        setDownloadProgress(null);
-      }
-    });
-
-    return function() {
-      peer.destroy();
-    };
+    return peerController.initializePeer();
   }, []);
 
   function requestConnection() {
-    startDirectConnection(peerId);
+    peerController.startDirectConnection(peerId);
   }
 
   function sendFile(file) {
@@ -1087,26 +135,26 @@ function App() {
       showToast('Not connected to a peer.', 'error');
       return;
     }
-    startOutgoingTransfer(conn, file, { trackProgress: true });
+    transferController.startOutgoingTransfer(conn, file, { trackProgress: true });
   }
 
   async function sendSelection(selection) {
-    var normalized = selection && selection.entries ? selection : buildSelectionFromFileList(selection);
-    var selectionFile = await buildSelectionFile(normalized, 'send');
+    var normalized = selection && selection.entries ? selection : selectionController.buildSelectionFromFileList(selection);
+    var selectionFile = await selectionController.buildSelectionFile(normalized, 'send');
     if (!selectionFile || !selectionFile.file) return;
     sendFile(selectionFile.file);
   }
 
   async function sendSelectedFiles(fileList) {
-    await sendSelection(buildSelectionFromFileList(fileList));
+    await sendSelection(selectionController.buildSelectionFromFileList(fileList));
   }
 
   async function sendSelectedFolder(fileList) {
-    await sendSelection(buildSelectionFromFileList(fileList));
+    await sendSelection(selectionController.buildSelectionFromFileList(fileList));
   }
 
   async function sendDroppedSelection(dataTransfer) {
-    var selection = await buildSelectionFromDrop(dataTransfer);
+    var selection = await selectionController.buildSelectionFromDrop(dataTransfer);
     if (!selection) return;
     await sendSelection(selection);
   }
@@ -1168,7 +216,7 @@ function App() {
 
   function disconnect() {
     if (connRef.current) connRef.current.close();
-    clearTransferHistory();
+    transferController.clearTransferHistory();
     connRef.current = null;
     setStatus('idle');
     setPeerId('');
@@ -1183,7 +231,7 @@ function App() {
       transfer.conn.send({ type: 'file-cancel', id: fileId });
     }
 
-    cancelOutgoingTransfer(fileId, 'Send cancelled.');
+    transferController.cancelOutgoingTransfer(fileId, 'Send cancelled.');
   }
 
   function cancelReceive() {
@@ -1195,7 +243,7 @@ function App() {
       fileBuild.conn.send({ type: 'file-cancel', id: fileId });
     }
 
-    cancelIncomingTransfer(fileId, 'Receive cancelled.');
+    transferController.cancelIncomingTransfer(fileId, 'Receive cancelled.');
   }
 
   function createHostedFileId() {
@@ -1224,7 +272,7 @@ function App() {
 
   function removeHostedFile(id) {
     setHostedFiles(function(prev) {
-      return prev.filter(function(f) { return f.id !== id; });
+      return prev.filter(function(file) { return file.id !== id; });
     });
   }
 
@@ -1253,8 +301,8 @@ function App() {
   }
 
   async function hostSelection(selection) {
-    var normalized = selection && selection.entries ? selection : buildSelectionFromFileList(selection);
-    var selectionFile = await buildSelectionFile(normalized, 'link');
+    var normalized = selection && selection.entries ? selection : selectionController.buildSelectionFromFileList(selection);
+    var selectionFile = await selectionController.buildSelectionFile(normalized, 'link');
     if (!selectionFile || !selectionFile.file) return;
     hostFile(selectionFile.file, {
       sourceCount: selectionFile.sourceCount,
@@ -1263,15 +311,15 @@ function App() {
   }
 
   async function hostSelectedFiles(fileList) {
-    await hostSelection(buildSelectionFromFileList(fileList));
+    await hostSelection(selectionController.buildSelectionFromFileList(fileList));
   }
 
   async function hostSelectedFolder(fileList) {
-    await hostSelection(buildSelectionFromFileList(fileList));
+    await hostSelection(selectionController.buildSelectionFromFileList(fileList));
   }
 
   async function hostDroppedSelection(dataTransfer) {
-    var selection = await buildSelectionFromDrop(dataTransfer);
+    var selection = await selectionController.buildSelectionFromDrop(dataTransfer);
     if (!selection) return;
     await hostSelection(selection);
   }
@@ -1293,300 +341,56 @@ function App() {
     e.target.value = '';
   }
 
-  /* Render */
-  var directConnectLink = myId ? buildConnectLink(myId) : '';
-  var scannerDisabled = !myId || status === 'connecting' || isDownloading;
-  var isPackagingZip = !!zipProgress;
-
-  return h('div', { style: { maxWidth: 520, margin: '0 auto', padding: '60px 20px 80px', minHeight: '100vh' } },
-
-    /* Header */
-    h('div', { style: { textAlign:'center', marginBottom:48, animation:'fadeUp 0.5s ease' } },
-      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, fontWeight:400, letterSpacing:3, textTransform:'uppercase', color:'var(--accent)', marginBottom:12 } }, 'peer-to-peer'),
-      h('h1', { style: { fontSize:48, fontWeight:700, letterSpacing:'-0.03em', lineHeight:1, marginBottom:10 } },
-        'drop', h('span', { style: { color:'var(--accent)' } }, '.')
-      ),
-      h('p', { style: { color:'var(--text-dim)', fontSize:15, fontWeight:300 } }, 'Send files directly between browsers. No server, no upload.')
-    ),
-
-    /* Your ID card */
-    !isDownloadSession && status !== 'connected' && h('div', { style: { background:'var(--surface)', border:'1px solid var(--border)', borderRadius:16, padding:'22px 26px', marginBottom:20, animation:'fadeUp 0.5s ease 0.1s both' } },
-      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:10 } }, 'Your ID'),
-      h('div', { style: { display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' } },
-        h('div', { style: { flex:'1 1 auto', fontFamily:"'DM Mono', monospace", fontSize:20, fontWeight:500, color: myId ? 'var(--text)' : 'var(--text-dim)', animation: myId ? 'none' : 'pulse 1.5s infinite' } }, myId || 'connecting...'),
-        myId && h('div', { style: { display:'flex', gap:8, flexWrap:'wrap' } },
-          h('button', {
-            onClick: copyId,
-            style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color: copied ? 'var(--accent)' : 'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
-            onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
-            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
-          }, copied ? [h(CheckIcon, { key:'ci' }), ' copied'] : [h(LinkIcon, { key:'li' }), ' copy direct connect link']),
-          h('button', {
-            onClick: function() {
-              showQrCode(
-                'Direct connect',
-                directConnectLink,
-                'Scan to connect to ' + myId + ' without typing the link.',
-                buildConnectQrValue(myId)
-              );
-            },
-            style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
-            onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
-            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
-          }, h(QrIcon), ' QR'),
-          h('button', {
-            onClick: function() { setScannerOpen(true); },
-            disabled: scannerDisabled,
-            style: {
-              display:'flex', alignItems:'center', justifyContent:'center', gap:6,
-              padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)',
-              background:'var(--surface-2)', color: scannerDisabled ? 'var(--text-dim)' : 'var(--text-dim)',
-              cursor: scannerDisabled ? 'not-allowed' : 'pointer',
-              fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s',
-              whiteSpace:'nowrap', opacity: scannerDisabled ? 0.55 : 1
-            },
-            onMouseEnter: function(e) { if (!scannerDisabled) e.currentTarget.style.borderColor='var(--border-active)'; },
-            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
-          }, h(CameraIcon), ' open camera')
-        )
-      )
-    ),
-
-    /* Connect section */
-    !isDownloadSession && status !== 'connected' && h('div', { style: { background:'var(--surface)', border:'1px solid var(--border)', borderRadius:16, padding:'22px 26px', marginBottom:20, animation:'fadeUp 0.5s ease 0.2s both' } },
-      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:14 } }, 'Connect to Peer'),
-      h('div', { style: { display:'flex', gap:10, flexWrap:'wrap' } },
-        h('input', {
-          type: 'text', value: peerId,
-          onChange: function(e) { setPeerId(e.target.value); },
-          onKeyDown: function(e) { if (e.key === 'Enter') requestConnection(); },
-          placeholder: 'enter peer id...',
-          disabled: status === 'connecting',
-          style: { flex:'1 1 180px', minWidth:0, padding:'11px 16px', borderRadius:10, border:'1px solid var(--border)', background:'var(--bg)', color:'var(--text)', fontFamily:"'DM Mono', monospace", fontSize:14, outline:'none', transition:'border-color 0.2s', boxSizing:'border-box' },
-          onFocus: function(e) { e.target.style.borderColor='var(--accent-dim)'; },
-          onBlur: function(e) { e.target.style.borderColor='var(--border)'; }
-        }),
-        h('button', {
-          onClick: requestConnection,
-          disabled: !peerId.trim() || status === 'connecting',
-          style: { flex:'1 1 auto', padding:'11px 24px', borderRadius:10, border:'1px solid var(--accent)', background: status === 'connecting' ? 'var(--accent-dim)' : 'var(--accent)', color:'#0a0a0c', fontFamily:"'Outfit', sans-serif", fontSize:14, fontWeight:600, cursor: status === 'connecting' ? 'wait' : 'pointer', transition:'all 0.2s', whiteSpace:'nowrap', boxSizing:'border-box' },
-          onMouseEnter: function(e) { if (status !== 'connecting') e.target.style.background='#5dd4a6'; },
-          onMouseLeave: function(e) { if (status !== 'connecting') e.target.style.background='var(--accent)'; }
-        }, status === 'connecting' ? 'connecting...' : 'connect')
-      )
-    ),
-
-    /* Connected state */
-    status === 'connected' && h(React.Fragment, null,
-      h('div', { style: { background:'var(--surface)', border:'1px solid var(--accent-dim)', borderRadius:16, padding:'18px 26px', marginBottom:20, animation:'fadeUp 0.3s ease', display:'flex', alignItems:'center', justifyContent:'space-between' } },
-        h('div', { style: { display:'flex', alignItems:'center', gap:12 } },
-          h('div', { style: { width:10, height:10, borderRadius:'50%', background:'var(--accent)', animation:'ripple 2s infinite' } }),
-          h('div', null,
-            h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:13, color:'var(--text-dim)' } }, 'connected to'),
-            h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:15, fontWeight:500, color:'var(--accent)' } }, peerId || (connRef.current && connRef.current.peer) || '-')
-          )
-        ),
-        h('button', {
-          onClick: disconnect,
-          style: { padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, display:'flex', alignItems:'center', gap:6, transition:'all 0.2s' },
-          onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--danger)'; e.currentTarget.style.color='var(--danger)'; },
-          onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
-        }, h(XIcon), ' disconnect')
-      ),
-
-      /* Drop zone */
-      h('div', {
-        onDragOver: onDragOver, onDragLeave: onDragLeave, onDrop: onDrop,
-        onClick: function() {
-          if (!isPackagingZip) {
-            openPicker('file-input');
-          }
-        },
-        style: { border: '2px dashed ' + (dragging ? 'var(--accent)' : 'var(--border)'), borderRadius:20, padding:'50px 30px', textAlign:'center', cursor: isPackagingZip ? 'wait' : 'pointer', transition:'all 0.3s', background: dragging ? 'var(--accent-glow)' : 'var(--surface)', marginBottom:24, animation:'fadeUp 0.4s ease', opacity: isPackagingZip ? 0.78 : 1 },
-        onMouseEnter: function(e) { if (!dragging && !isPackagingZip) { e.currentTarget.style.borderColor='var(--border-active)'; e.currentTarget.style.background='var(--surface-2)'; } },
-        onMouseLeave: function(e) { if (!dragging) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.background='var(--surface)'; } }
-      },
-        h('div', { style: { marginBottom:14 } }, h(UploadIcon, { stroke: dragging ? 'var(--accent)' : 'var(--text-dim)', style: { transition:'all 0.3s' } })),
-        h('div', { style: { fontSize:16, fontWeight:500, marginBottom:6, color: dragging ? 'var(--accent)' : 'var(--text)' } }, dragging ? 'Drop to send' : 'Drag & drop files or folders here'),
-        h('div', { style: { color:'var(--text-dim)', fontSize:13, fontWeight:300 } }, 'click to browse files · folders keep their name when zipped'),
-        h('div', { style: { display:'flex', justifyContent:'center', gap:10, flexWrap:'wrap', marginTop:14 } },
-          h('button', {
-            onClick: function(e) { openPicker('file-input', e); },
-            disabled: isPackagingZip,
-            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor: isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: isPackagingZip ? 0.6 : 1 }
-          }, 'browse files'),
-          h('button', {
-            onClick: function(e) { openPicker('folder-input', e); },
-            disabled: isPackagingZip,
-            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor: isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: isPackagingZip ? 0.6 : 1 }
-          }, 'choose folder')
-        ),
-        h('input', { id: 'file-input', type: 'file', multiple: true, style: { display:'none' }, onChange: onFileSelect, disabled: isPackagingZip }),
-        h('input', { id: 'folder-input', type: 'file', webkitdirectory: true, multiple: true, style: { display:'none' }, onChange: onFolderSelect, disabled: isPackagingZip })
-      )
-    ),
-
-    /* Zip progress */
-    zipProgress && h('div', { style: { background:'var(--surface)', border:'1px solid rgba(251,191,36,0.28)', borderRadius:14, padding:'16px 22px', marginBottom:20, animation:'fadeUp 0.3s ease' } },
-      h('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:8 } },
-        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--warning)', textTransform:'uppercase', letterSpacing:1 } }, 'Creating zip archive'),
-        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--warning)', flexShrink:0 } }, zipProgress.percent + '%')
-      ),
-      h('div', { style: { fontSize:13, fontWeight:500, marginBottom:6, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, zipProgress.name),
-      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', marginBottom:10, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } },
-        zipProgress.sourceLabel + ' · ' + formatBytes(zipProgress.totalBytes) + ' · ' + (zipProgress.action === 'link' ? 'preparing share link' : 'preparing to send') + (zipProgress.currentFile ? ' · ' + zipProgress.currentFile : '')
-      ),
-      h('div', { style: { height:6, borderRadius:3, background:'var(--surface-2)', overflow:'hidden' } },
-        h('div', { style: { height:'100%', borderRadius:3, background:'linear-gradient(90deg, #f59e0b, #fbbf24)', width: zipProgress.percent + '%', transition:'width 0.15s ease' } })
-      )
-    ),
-
-    /* Send progress */
-    sendProgress && h('div', { style: { background:'var(--surface)', border:'1px solid rgba(99,102,241,0.4)', borderRadius:14, padding:'16px 22px', marginBottom:20, animation:'fadeUp 0.3s ease' } },
-      h('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 } },
-        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--text-dim)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, minWidth:0 } }, '↑ Sending: ' + sendProgress.name),
-        h('div', { style: { display:'flex', alignItems:'center', gap:10, flexShrink:0 } },
-          h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'#818cf8' } }, sendProgress.percent + '%' + (sendProgress.eta ? ' · ' + sendProgress.eta + ' left' : '')),
-          h('button', {
-            onClick: cancelSend, title: 'Cancel send',
-            style: { width:28, height:28, borderRadius:7, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', transition:'all 0.2s', flexShrink:0, padding:0 },
-            onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--danger)'; e.currentTarget.style.color='var(--danger)'; },
-            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
-          }, h(XIcon))
-        )
-      ),
-      h('div', { style: { height:6, borderRadius:3, background:'var(--surface-2)', overflow:'hidden' } },
-        h('div', { style: { height:'100%', borderRadius:3, background:'linear-gradient(90deg, #818cf8, #a78bfa)', width: sendProgress.percent + '%', transition:'width 0.15s ease' } })
-      )
-    ),
-
-    /* Receive progress */
-    receiveProgress && h('div', { style: { background:'var(--surface)', border:'1px solid var(--accent-dim)', borderRadius:14, padding:'16px 22px', marginBottom:20, animation:'fadeUp 0.3s ease' } },
-      h('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 } },
-        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--text-dim)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, minWidth:0 } }, '↓ Receiving: ' + receiveProgress.name),
-        h('div', { style: { display:'flex', alignItems:'center', gap:10, flexShrink:0 } },
-          h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--accent)' } }, receiveProgress.percent + '%' + (receiveProgress.eta ? ' · ' + receiveProgress.eta + ' left' : '')),
-          h('button', {
-            onClick: cancelReceive, title: 'Cancel receive',
-            style: { width:28, height:28, borderRadius:7, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', transition:'all 0.2s', flexShrink:0, padding:0 },
-            onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--danger)'; e.currentTarget.style.color='var(--danger)'; },
-            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
-          }, h(XIcon))
-        )
-      ),
-      h('div', { style: { height:6, borderRadius:3, background:'var(--surface-2)', overflow:'hidden' } },
-        h('div', { style: { height:'100%', borderRadius:3, background:'linear-gradient(90deg, var(--accent), #5dd4a6)', width: receiveProgress.percent + '%', transition:'width 0.15s ease' } })
-      )
-    ),
-
-    /* Download Link Section */
-    !isDownloadSession && status !== 'connected' && h('div', { style: { background:'var(--surface)', border:'1px solid var(--border)', borderRadius:16, padding:'22px 26px', marginBottom:20, animation:'fadeUp 0.5s ease 0.3s both' } },
-      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:14, display:'flex', alignItems:'center', gap:8 } }, h(ShareIcon), ' Create Download Link'),
-      h('div', {
-        onDragOver: onLinkDragOver, onDragLeave: onLinkDragLeave, onDrop: onLinkDrop,
-        onClick: function() {
-          if (myId && !isPackagingZip) {
-            openPicker('link-file-input');
-          }
-        },
-        style: { border: '2px dashed ' + (linkDragging ? '#818cf8' : 'var(--border)'), borderRadius:14, padding:'32px 20px', textAlign:'center', cursor: !myId ? 'not-allowed' : isPackagingZip ? 'wait' : 'pointer', transition:'all 0.3s', background: linkDragging ? 'rgba(99,102,241,0.08)' : 'transparent', opacity: !myId ? 0.5 : isPackagingZip ? 0.78 : 1 },
-        onMouseEnter: function(e) { if (!linkDragging && myId && !isPackagingZip) { e.currentTarget.style.borderColor='var(--border-active)'; e.currentTarget.style.background='var(--surface-2)'; } },
-        onMouseLeave: function(e) { if (!linkDragging) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.background='transparent'; } }
-      },
-        h('div', { style: { marginBottom:10 } }, h(LinkDropIcon, { stroke: linkDragging ? '#818cf8' : 'var(--text-dim)', style: { transition:'all 0.3s' } })),
-        h('div', { style: { fontSize:14, fontWeight:500, marginBottom:4, color: linkDragging ? '#818cf8' : 'var(--text)' } }, linkDragging ? 'Drop to create link' : 'Drop files or folders to create a shareable link'),
-        h('div', { style: { color:'var(--text-dim)', fontSize:12, fontWeight:300 } }, 'Anyone with the link can download directly from your browser · folders are zipped under their own name'),
-        h('div', { style: { display:'flex', justifyContent:'center', gap:10, flexWrap:'wrap', marginTop:14 } },
-          h('button', {
-            onClick: function(e) { openPicker('link-file-input', e); },
-            disabled: !myId || isPackagingZip,
-            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor: !myId || isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: !myId || isPackagingZip ? 0.6 : 1 }
-          }, 'browse files'),
-          h('button', {
-            onClick: function(e) { openPicker('link-folder-input', e); },
-            disabled: !myId || isPackagingZip,
-            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor: !myId || isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: !myId || isPackagingZip ? 0.6 : 1 }
-          }, 'choose folder')
-        ),
-        h('input', { id: 'link-file-input', type: 'file', multiple: true, style: { display:'none' }, onChange: onLinkFileSelect, disabled: !myId || isPackagingZip }),
-        h('input', { id: 'link-folder-input', type: 'file', webkitdirectory: true, multiple: true, style: { display:'none' }, onChange: onLinkFolderSelect, disabled: !myId || isPackagingZip })
-      ),
-
-      /* Hosted files list */
-      hostedFiles.length > 0 && h('div', { style: { marginTop:16 } },
-        hostedFiles.map(function(hosted) {
-          return h('div', { key: hosted.id, style: { display:'flex', alignItems:'flex-start', gap:12, padding:'12px 16px', background:'var(--surface-2)', border:'1px solid var(--border)', borderRadius:12, marginBottom:8, animation:'fadeUp 0.3s ease' } },
-            h('div', { style: { width:38, height:38, borderRadius:8, background:'rgba(99,102,241,0.1)', border:'1px solid rgba(99,102,241,0.3)', display:'flex', alignItems:'center', justifyContent:'center', color:'#818cf8', flexShrink:0 } }, h(FileIcon)),
-            h('div', { style: { flex:1, minWidth:0 } },
-              h('div', { style: { fontWeight:500, fontSize:13, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, hosted.file.name),
-              h('div', { style: { display:'flex', gap:8, flexWrap:'wrap', marginTop:8 } },
-                h('button', {
-                  onClick: function() { copyLink(hosted.link, hosted.id); },
-                  style: { display:'flex', alignItems:'center', gap:5, padding:'6px 12px', borderRadius:7, border: '1px solid ' + (linkCopied === hosted.id ? 'var(--accent-dim)' : 'var(--border)'), background: linkCopied === hosted.id ? 'var(--accent-glow)' : 'var(--surface)', color: linkCopied === hosted.id ? 'var(--accent)' : 'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
-                  onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
-                  onMouseLeave: function(e) { e.currentTarget.style.borderColor = linkCopied === hosted.id ? 'var(--accent-dim)' : 'var(--border)'; }
-                }, linkCopied === hosted.id ? [h(CheckIcon, { key:'c' }), ' copied'] : [h(CopyIcon, { key:'c' }), ' copy link']),
-                h('button', {
-                  onClick: function() {
-                    showQrCode(
-                      hosted.file.name,
-                      hosted.link,
-                      'Scan to download this file directly from the host browser.',
-                      buildDownloadQrValue(myId, hosted.id)
-                    );
-                  },
-                  style: { display:'flex', alignItems:'center', gap:5, padding:'6px 10px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
-                  onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
-                  onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
-                }, h(QrIcon), ' QR'),
-                h('button', {
-                  onClick: function() { removeHostedFile(hosted.id); },
-                  style: { display:'flex', alignItems:'center', gap:5, padding:'6px 10px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
-                  onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--danger)'; e.currentTarget.style.color='var(--danger)'; },
-                  onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
-                }, h(XIcon), ' cancel')
-              ),
-              h('div', { style: { color:'var(--text-dim)', fontSize:11, fontFamily:"'DM Mono', monospace", marginTop:2 } }, formatBytes(hosted.file.size) + ' · ' + (hosted.folderCount === 1 && hosted.sourceCount === 1 ? 'folder zipped for sharing' : hosted.folderCount > 0 ? hosted.sourceCount + ' items zipped for sharing' : hosted.sourceCount > 1 ? hosted.sourceCount + ' files zipped for sharing' : 'sharing via link'))
-            )
-          );
-        }),
-        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--warning)', marginTop:8, paddingLeft:4, opacity:0.8 } }, 'keep this tab open - files are served from your browser')
-      )
-    ),
-
-    /* Download in progress */
-    isDownloading && h('div', { style: { background:'var(--surface)', border:'1px solid rgba(99,102,241,0.4)', borderRadius:16, padding:'40px 26px', marginBottom:20, animation:'fadeUp 0.3s ease', textAlign:'center' } },
-      h('div', { style: { width:56, height:56, borderRadius:'50%', background:'rgba(99,102,241,0.1)', border:'1px solid rgba(99,102,241,0.3)', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 20px', animation:'ripple 2s infinite' } }, h(DownloadIcon)),
-      h('h3', { style: { fontFamily:"'Outfit', sans-serif", fontWeight:600, fontSize:18, marginBottom:8 } }, 'Downloading File'),
-      h('p', { style: { color:'var(--text-dim)', fontSize:13, fontFamily:"'DM Mono', monospace" } }, downloadProgress || 'Preparing...')
-    ),
-
-    /* Transfer history */
-    transfers.length > 0 && h('div', { style: { animation:'fadeUp 0.3s ease' } },
-      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:12, paddingLeft:4 } }, 'Transfers'),
-      [].concat(transfers).reverse().map(function(t, i) { return h(TransferItem, { key: i, file: t, direction: t.direction }); })
-    ),
-
-    /* QR modals */
-    qrModal && h(QrModal, {
-      title: qrModal.title,
-      value: qrModal.value,
-      qrValue: qrModal.qrValue,
-      subtitle: qrModal.subtitle,
-      onClose: function() { setQrModal(null); },
-      onCopy: copyQrValue
-    }),
-    scannerOpen && h(ScannerModal, {
-      onClose: function() { setScannerOpen(false); },
-      onScan: handleScannerResult
-    }),
-
-    /* Toast */
-    toast && h(Toast, { key: toast.key, message: toast.message, type: toast.type, onDone: function() { setToast(null); } }),
-
-    /* Footer */
-    h('div', { style: { textAlign:'center', marginTop:48, fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', opacity:0.5 } }, 'files never touch a server · share links or connect directly · powered by WebRTC')
-  );
+  return h(DropApp.AppView, {
+    myId: myId,
+    peerId: peerId,
+    status: status,
+    toast: toast,
+    transfers: transfers,
+    dragging: dragging,
+    copied: copied,
+    sendProgress: sendProgress,
+    receiveProgress: receiveProgress,
+    zipProgress: zipProgress,
+    hostedFiles: hostedFiles,
+    linkDragging: linkDragging,
+    linkCopied: linkCopied,
+    isDownloading: isDownloading,
+    isDownloadSession: isDownloadSession,
+    downloadProgress: downloadProgress,
+    qrModal: qrModal,
+    scannerOpen: scannerOpen,
+    directConnectLink: myId ? buildConnectLink(myId) : '',
+    scannerDisabled: !myId || status === 'connecting' || isDownloading,
+    isPackagingZip: !!zipProgress,
+    connectedPeerId: peerId || (connRef.current && connRef.current.peer) || '-',
+    setPeerId: setPeerId,
+    requestConnection: requestConnection,
+    showQrCode: peerController.showQrCode,
+    openScanner: function() { setScannerOpen(true); },
+    closeScanner: function() { setScannerOpen(false); },
+    handleScannerResult: peerController.handleScannerResult,
+    copyId: copyId,
+    openPicker: openPicker,
+    onDragOver: onDragOver,
+    onDragLeave: onDragLeave,
+    onDrop: onDrop,
+    onFileSelect: onFileSelect,
+    onFolderSelect: onFolderSelect,
+    disconnect: disconnect,
+    cancelSend: cancelSend,
+    cancelReceive: cancelReceive,
+    onLinkDragOver: onLinkDragOver,
+    onLinkDragLeave: onLinkDragLeave,
+    onLinkDrop: onLinkDrop,
+    onLinkFileSelect: onLinkFileSelect,
+    onLinkFolderSelect: onLinkFolderSelect,
+    copyLink: copyLink,
+    removeHostedFile: removeHostedFile,
+    closeQrModal: function() { setQrModal(null); },
+    copyQrValue: peerController.copyQrValue,
+    clearToast: function() { setToast(null); }
+  });
 }
 
 var root = ReactDOM.createRoot(document.getElementById('root'));
