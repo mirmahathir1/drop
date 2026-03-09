@@ -24,6 +24,7 @@ function App() {
   const connRef = useRef(null);
   const incomingTransfersRef = useRef({});
   const outgoingTransfersRef = useRef({});
+  const transfersRef = useRef([]);
   const currentSendFileIdRef = useRef(null);
   const currentReceiveFileIdRef = useRef(null);
   const hostedFilesRef = useRef([]);
@@ -73,6 +74,21 @@ function App() {
       setIsDownloading(false);
       setDownloadProgress(null);
     }
+  }
+
+  function clearTransferHistory() {
+    var transfers = transfersRef.current || [];
+
+    for (var i = 0; i < transfers.length; i++) {
+      if (transfers[i] && transfers[i].url) {
+        try {
+          URL.revokeObjectURL(transfers[i].url);
+        } catch (err) {}
+      }
+    }
+
+    transfersRef.current = [];
+    setTransfers([]);
   }
 
   function getSelectedFiles(fileList) {
@@ -807,6 +823,7 @@ function App() {
     conn.on('data', function(data) { handleData(conn, data, mode); });
     conn.on('close', function() {
       cleanupConnectionTransfers(conn);
+      clearTransferHistory();
       setStatus('idle');
       connRef.current = null;
       showToast('Peer disconnected.', 'error');
@@ -950,6 +967,10 @@ function App() {
       showToast('Peer link scanned. Connecting...', 'info');
     }
   }
+
+  useEffect(function() {
+    transfersRef.current = transfers;
+  }, [transfers]);
 
   useEffect(function() {
     hostedFilesRef.current = hostedFiles;
@@ -1147,6 +1168,7 @@ function App() {
 
   function disconnect() {
     if (connRef.current) connRef.current.close();
+    clearTransferHistory();
     connRef.current = null;
     setStatus('idle');
     setPeerId('');
