@@ -59,3 +59,22 @@ const LinkDropIcon = (props) => (
     h('path', { d:'M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71' })
   )
 );
+const QrIcon = () => (
+  h('svg', { width:16, height:16, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' },
+    h('rect', { x:3, y:3, width:6, height:6, rx:1 }),
+    h('rect', { x:15, y:3, width:6, height:6, rx:1 }),
+    h('rect', { x:3, y:15, width:6, height:6, rx:1 }),
+    h('rect', { x:15, y:15, width:2, height:2 }),
+    h('path', { d:'M19 15h2v2' }),
+    h('path', { d:'M21 19v2h-6v-2' }),
+    h('path', { d:'M11 7h2' }),
+    h('path', { d:'M11 11h2' }),
+    h('path', { d:'M7 11h2' })
+  )
+);
+const CameraIcon = () => (
+  h('svg', { width:16, height:16, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' },
+    h('path', { d:'M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z' }),
+    h('circle', { cx:12, cy:13, r:4 })
+  )
+);

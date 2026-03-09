@@ -35,6 +35,62 @@ function sanitizeFileName(name) {
   return (name || 'download').replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
 
+function getAppBaseUrl() {
+  return window.location.origin + window.location.pathname;
+}
+
+function buildConnectLink(peerId) {
+  return getAppBaseUrl() + '#connect=' + encodeURIComponent(peerId || '');
+}
+
+function buildDownloadLink(peerId, fileId) {
+  var link = getAppBaseUrl() + '#dl=' + encodeURIComponent(peerId || '');
+  if (fileId) {
+    link += '&file=' + encodeURIComponent(fileId);
+  }
+  return link;
+}
+
+function parseDropLink(value) {
+  if (!value) return null;
+
+  var trimmed = String(value).trim();
+  if (!trimmed) return null;
+
+  var candidate = trimmed;
+  if (candidate.indexOf('#') === 0) {
+    candidate = getAppBaseUrl() + candidate;
+  }
+
+  try {
+    var url = new URL(candidate, window.location.href);
+    var hash = url.hash || '';
+    var params = new URLSearchParams(hash.charAt(0) === '#' ? hash.slice(1) : hash);
+    var connectId = params.get('connect');
+    var downloadId = params.get('dl');
+    var fileId = params.get('file');
+
+    if (connectId) {
+      return { type: 'connect', id: connectId, url: url.toString() };
+    }
+
+    if (downloadId) {
+      return {
+        type: 'download',
+        id: downloadId,
+        fileId: fileId || '',
+        url: url.toString()
+      };
+    }
+  } catch (err) {}
+
+  if (/^[a-z]+-[a-z]+-\d+$/i.test(trimmed)) {
+    return { type: 'connect', id: trimmed, url: buildConnectLink(trimmed) };
+  }
+
+  return null;
+}
+
 function triggerDownloadUrl(url, name) {
   var a = document.createElement('a');
   a.href = url;

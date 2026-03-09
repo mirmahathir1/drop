@@ -17,6 +17,8 @@ function App() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isDownloadSession, setIsDownloadSession] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(null);
+  const [qrModal, setQrModal] = useState(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   const peerRef = useRef(null);
   const connRef = useRef(null);
@@ -502,6 +504,135 @@ function App() {
     });
   }
 
+  function showQrCode(title, value, subtitle) {
+    if (!value) return;
+    setQrModal({ title: title, value: value, subtitle: subtitle || '' });
+  }
+
+  function copyQrValue() {
+    if (!qrModal) return;
+    navigator.clipboard.writeText(qrModal.value);
+    showToast('Link copied.', 'success');
+  }
+
+  function startDirectConnection(targetId, options) {
+    var settings = options || {};
+    var nextPeerId = (targetId || '').trim();
+    var peer = peerRef.current;
+    var currentPeerId = settings.fromId || (peer && peer.id) || myId;
+
+    if (!nextPeerId || !peer) return false;
+
+    if (currentPeerId && nextPeerId === currentPeerId) {
+      showToast('That link points back to this browser.', 'info');
+      return false;
+    }
+
+    if (status === 'connecting') {
+      showToast('Already connecting to a peer.', 'info');
+      return false;
+    }
+
+    if (connRef.current && connRef.current.open) {
+      showToast('Disconnect before starting another direct connection.', 'info');
+      return false;
+    }
+
+    setPeerId(nextPeerId);
+    setStatus('connecting');
+
+    var conn = peer.connect(nextPeerId, {
+      metadata: { type: 'request', fromId: currentPeerId },
+      reliable: true
+    });
+
+    setupConn(conn, 'direct');
+    return true;
+  }
+
+  function startHostedDownload(hostId, options) {
+    var settings = options || {};
+    var nextHostId = (hostId || '').trim();
+    var nextFileId = (settings.fileId || '').trim();
+    var peer = peerRef.current;
+    var currentPeerId = (peer && peer.id) || myId;
+
+    if (!nextHostId || !peer) return false;
+
+    if (currentPeerId && nextHostId === currentPeerId) {
+      showToast('That download link points back to this browser.', 'info');
+      return false;
+    }
+
+    if (isDownloading) {
+      showToast('A download is already in progress.', 'info');
+      return false;
+    }
+
+    if (settings.downloadSession) {
+      setIsDownloadSession(true);
+    }
+
+    setIsDownloading(true);
+    setDownloadProgress('Connecting to host...');
+
+    var dlConn = peer.connect(nextHostId, {
+      metadata: { type: 'download-request', fileId: nextFileId || null },
+      reliable: true
+    });
+
+    dlConn.on('open', function() {
+      setDownloadProgress('Connected. Waiting for file...');
+    });
+
+    dlConn.on('data', function(data) {
+      handleData(dlConn, data, 'download');
+    });
+
+    dlConn.on('error', function(err) {
+      console.error('Download connection error:', err);
+      cleanupConnectionTransfers(dlConn);
+      setReceiveProgress(null);
+      setDownloadProgress(null);
+      setIsDownloading(false);
+      showToast('Failed to connect to host. The link may have expired.', 'error');
+    });
+
+    dlConn.on('close', function() {
+      cleanupConnectionTransfers(dlConn);
+      if (currentReceiveFileIdRef.current) {
+        setReceiveProgress(null);
+        showToast('Download interrupted.', 'error');
+      }
+      setDownloadProgress(null);
+      setIsDownloading(false);
+    });
+
+    return true;
+  }
+
+  function handleScannerResult(value) {
+    var parsed = parseDropLink(value);
+
+    setScannerOpen(false);
+
+    if (!parsed) {
+      showToast('That QR code is not a valid Drop link.', 'error');
+      return;
+    }
+
+    if (parsed.type === 'download') {
+      if (startHostedDownload(parsed.id, { downloadSession: false, fileId: parsed.fileId })) {
+        showToast('Download link scanned. Connecting...', 'info');
+      }
+      return;
+    }
+
+    if (startDirectConnection(parsed.id)) {
+      showToast('Peer link scanned. Connecting...', 'info');
+    }
+  }
+
   useEffect(function() {
     hostedFilesRef.current = hostedFiles;
   }, [hostedFiles]);
@@ -530,57 +661,21 @@ function App() {
 
   /* Initialize PeerJS */
   useEffect(function() {
-    var hash = window.location.hash;
-    var dlMatch = hash.match(/^#dl=(.+)$/);
-    var connectMatch = hash.match(/^#connect=(.+)$/);
+    var launchAction = parseDropLink(window.location.hash);
     var id = generateId();
     var peer = new Peer(id);
+    peerRef.current = peer;
 
     peer.on('open', function(assignedId) {
       setMyId(assignedId);
 
-      if (connectMatch) {
-        var targetId = connectMatch[1];
-        setPeerId(targetId);
-        setStatus('connecting');
-        var conn = peer.connect(targetId, { metadata: { type: 'request', fromId: assignedId }, reliable: true });
-        setupConn(conn, 'direct');
+      if (launchAction && launchAction.type === 'connect') {
+        startDirectConnection(launchAction.id, { fromId: assignedId });
         history.replaceState(null, '', window.location.pathname + window.location.search);
       }
 
-      if (dlMatch) {
-        var hostId = dlMatch[1];
-        setIsDownloading(true);
-        setIsDownloadSession(true);
-        setDownloadProgress('Connecting to host...');
-        var dlConn = peer.connect(hostId, { metadata: { type: 'download-request' }, reliable: true });
-
-        dlConn.on('open', function() {
-          setDownloadProgress('Connected. Waiting for file...');
-        });
-
-        dlConn.on('data', function(data) {
-          handleData(dlConn, data, 'download');
-        });
-
-        dlConn.on('error', function(err) {
-          console.error('Download connection error:', err);
-          cleanupConnectionTransfers(dlConn);
-          setReceiveProgress(null);
-          setDownloadProgress(null);
-          setIsDownloading(false);
-          showToast('Failed to connect to host. The link may have expired.', 'error');
-        });
-
-        dlConn.on('close', function() {
-          cleanupConnectionTransfers(dlConn);
-          if (currentReceiveFileIdRef.current) {
-            setReceiveProgress(null);
-            showToast('Download interrupted.', 'error');
-          }
-          setDownloadProgress(null);
-          setIsDownloading(false);
-        });
+      if (launchAction && launchAction.type === 'download') {
+        startHostedDownload(launchAction.id, { downloadSession: true, fileId: launchAction.fileId });
       }
     });
 
@@ -588,8 +683,26 @@ function App() {
       if (conn.metadata && conn.metadata.type === 'download-request') {
         conn.on('open', function() {
           var files = hostedFilesRef.current;
-          if (files.length > 0) {
-            startOutgoingTransfer(conn, files[0].file, { trackProgress: false });
+          var requestedFileId = conn.metadata && conn.metadata.fileId;
+          var fileToSend = null;
+
+          if (requestedFileId) {
+            for (var i = 0; i < files.length; i++) {
+              if (files[i].id === requestedFileId) {
+                fileToSend = files[i];
+                break;
+              }
+            }
+          }
+
+          if (!fileToSend && files.length > 0) {
+            fileToSend = files[0];
+          }
+
+          if (fileToSend) {
+            startOutgoingTransfer(conn, fileToSend.file, { trackProgress: false });
+          } else {
+            conn.close();
           }
         });
 
@@ -620,18 +733,13 @@ function App() {
       }
     });
 
-    peerRef.current = peer;
-
     return function() {
       peer.destroy();
     };
   }, []);
 
   function requestConnection() {
-    if (!peerId.trim() || !peerRef.current) return;
-    setStatus('connecting');
-    var conn = peerRef.current.connect(peerId.trim(), { metadata: { type: 'request', fromId: myId }, reliable: true });
-    setupConn(conn, 'direct');
+    startDirectConnection(peerId);
   }
 
   function acceptRequest() {
@@ -693,7 +801,7 @@ function App() {
   }
 
   function copyId() {
-    var link = window.location.origin + window.location.pathname + '#connect=' + myId;
+    var link = buildConnectLink(myId);
     navigator.clipboard.writeText(link);
     setCopied(true);
     setTimeout(function() { setCopied(false); }, 2000);
@@ -732,7 +840,7 @@ function App() {
 
   function hostFile(file) {
     var id = Date.now().toString(36) + Math.random().toString(36).slice(2);
-    var link = window.location.origin + window.location.pathname + '#dl=' + myId;
+    var link = buildDownloadLink(myId, id);
     setHostedFiles(function(prev) { return [{ id: id, file: file, link: link }].concat(prev); });
     showToast('Link created for: ' + file.name, 'success');
   }
@@ -776,6 +884,9 @@ function App() {
   }
 
   /* Render */
+  var directConnectLink = myId ? buildConnectLink(myId) : '';
+  var scannerDisabled = !myId || status === 'connecting' || isDownloading;
+
   return h('div', { style: { maxWidth: 520, margin: '0 auto', padding: '60px 20px 80px', minHeight: '100vh' } },
 
     /* Header */
@@ -792,12 +903,36 @@ function App() {
       h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:10 } }, 'Your ID'),
       h('div', { style: { display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' } },
         h('div', { style: { flex:'1 1 auto', fontFamily:"'DM Mono', monospace", fontSize:20, fontWeight:500, color: myId ? 'var(--text)' : 'var(--text-dim)', animation: myId ? 'none' : 'pulse 1.5s infinite' } }, myId || 'connecting...'),
-        myId && h('button', {
-          onClick: copyId,
-          style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color: copied ? 'var(--accent)' : 'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
-          onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
-          onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
-        }, copied ? [h(CheckIcon, { key:'ci' }), ' copied'] : [h(LinkIcon, { key:'li' }), ' copy direct connect link'])
+        myId && h('div', { style: { display:'flex', gap:8, flexWrap:'wrap' } },
+          h('button', {
+            onClick: copyId,
+            style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color: copied ? 'var(--accent)' : 'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
+            onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
+            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
+          }, copied ? [h(CheckIcon, { key:'ci' }), ' copied'] : [h(LinkIcon, { key:'li' }), ' copy direct connect link']),
+          h('button', {
+            onClick: function() {
+              showQrCode('Direct connect', directConnectLink, 'Scan to connect to ' + myId + ' without typing the link.');
+            },
+            style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
+            onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
+            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
+          }, h(QrIcon), ' QR'),
+          h('button', {
+            onClick: function() { setScannerOpen(true); },
+            disabled: scannerDisabled,
+            style: {
+              display:'flex', alignItems:'center', justifyContent:'center', gap:6,
+              padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)',
+              background:'var(--surface-2)', color: scannerDisabled ? 'var(--text-dim)' : 'var(--text-dim)',
+              cursor: scannerDisabled ? 'not-allowed' : 'pointer',
+              fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s',
+              whiteSpace:'nowrap', opacity: scannerDisabled ? 0.55 : 1
+            },
+            onMouseEnter: function(e) { if (!scannerDisabled) e.currentTarget.style.borderColor='var(--border-active)'; },
+            onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
+          }, h(CameraIcon), ' open camera')
+        )
       )
     ),
 
@@ -915,24 +1050,34 @@ function App() {
       /* Hosted files list */
       hostedFiles.length > 0 && h('div', { style: { marginTop:16 } },
         hostedFiles.map(function(hosted) {
-          return h('div', { key: hosted.id, style: { display:'flex', alignItems:'center', gap:12, padding:'12px 16px', background:'var(--surface-2)', border:'1px solid var(--border)', borderRadius:12, marginBottom:8, animation:'fadeUp 0.3s ease' } },
+          return h('div', { key: hosted.id, style: { display:'flex', alignItems:'flex-start', gap:12, padding:'12px 16px', background:'var(--surface-2)', border:'1px solid var(--border)', borderRadius:12, marginBottom:8, animation:'fadeUp 0.3s ease' } },
             h('div', { style: { width:38, height:38, borderRadius:8, background:'rgba(99,102,241,0.1)', border:'1px solid rgba(99,102,241,0.3)', display:'flex', alignItems:'center', justifyContent:'center', color:'#818cf8', flexShrink:0 } }, h(FileIcon)),
             h('div', { style: { flex:1, minWidth:0 } },
               h('div', { style: { fontWeight:500, fontSize:13, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, hosted.file.name),
+              h('div', { style: { display:'flex', gap:8, flexWrap:'wrap', marginTop:8 } },
+                h('button', {
+                  onClick: function() { copyLink(hosted.link, hosted.id); },
+                  style: { display:'flex', alignItems:'center', gap:5, padding:'6px 12px', borderRadius:7, border: '1px solid ' + (linkCopied === hosted.id ? 'var(--accent-dim)' : 'var(--border)'), background: linkCopied === hosted.id ? 'var(--accent-glow)' : 'var(--surface)', color: linkCopied === hosted.id ? 'var(--accent)' : 'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
+                  onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
+                  onMouseLeave: function(e) { e.currentTarget.style.borderColor = linkCopied === hosted.id ? 'var(--accent-dim)' : 'var(--border)'; }
+                }, linkCopied === hosted.id ? [h(CheckIcon, { key:'c' }), ' copied'] : [h(CopyIcon, { key:'c' }), ' copy link']),
+                h('button', {
+                  onClick: function() {
+                    showQrCode(hosted.file.name, hosted.link, 'Scan to download this file directly from the host browser.');
+                  },
+                  style: { display:'flex', alignItems:'center', gap:5, padding:'6px 10px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
+                  onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
+                  onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; }
+                }, h(QrIcon), ' QR'),
+                h('button', {
+                  onClick: function() { removeHostedFile(hosted.id); },
+                  style: { display:'flex', alignItems:'center', gap:5, padding:'6px 10px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
+                  onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--danger)'; e.currentTarget.style.color='var(--danger)'; },
+                  onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
+                }, h(XIcon), ' cancel')
+              ),
               h('div', { style: { color:'var(--text-dim)', fontSize:11, fontFamily:"'DM Mono', monospace", marginTop:2 } }, formatBytes(hosted.file.size) + ' · sharing via link')
-            ),
-            h('button', {
-              onClick: function() { copyLink(hosted.link, hosted.id); },
-              style: { display:'flex', alignItems:'center', gap:5, padding:'6px 12px', borderRadius:7, border: '1px solid ' + (linkCopied === hosted.id ? 'var(--accent-dim)' : 'var(--border)'), background: linkCopied === hosted.id ? 'var(--accent-glow)' : 'var(--surface)', color: linkCopied === hosted.id ? 'var(--accent)' : 'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s', flexShrink:0 },
-              onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
-              onMouseLeave: function(e) { e.currentTarget.style.borderColor = linkCopied === hosted.id ? 'var(--accent-dim)' : 'var(--border)'; }
-            }, linkCopied === hosted.id ? [h(CheckIcon, { key:'c' }), ' copied'] : [h(CopyIcon, { key:'c' }), ' copy link']),
-            h('button', {
-              onClick: function() { removeHostedFile(hosted.id); },
-              style: { width:30, height:30, borderRadius:6, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', transition:'all 0.2s', flexShrink:0 },
-              onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--danger)'; e.currentTarget.style.color='var(--danger)'; },
-              onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
-            }, h(XIcon))
+            )
           );
         }),
         h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--warning)', marginTop:8, paddingLeft:4, opacity:0.8 } }, 'keep this tab open - files are served from your browser')
@@ -954,6 +1099,19 @@ function App() {
 
     /* Connection request modal */
     pendingRequest && h(ConnectionModal, { fromId: pendingRequest.fromId, onAccept: acceptRequest, onReject: rejectRequest }),
+
+    /* QR modals */
+    qrModal && h(QrModal, {
+      title: qrModal.title,
+      value: qrModal.value,
+      subtitle: qrModal.subtitle,
+      onClose: function() { setQrModal(null); },
+      onCopy: copyQrValue
+    }),
+    scannerOpen && h(ScannerModal, {
+      onClose: function() { setScannerOpen(false); },
+      onScan: handleScannerResult
+    }),
 
     /* Toast */
     toast && h(Toast, { key: toast.key, message: toast.message, type: toast.type, onDone: function() { setToast(null); } }),
