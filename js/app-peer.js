@@ -24,9 +24,21 @@ DropApp.createPeerController = function createPeerController(options) {
   var startOutgoingTransfer = options.startOutgoingTransfer;
   var onDirectConnectionOpen = options.onDirectConnectionOpen;
 
+  var retryState = { type: null, targetId: null, fileId: null, attempts: 0, maxRetries: 3, timer: null };
+
+  function clearRetry() {
+    clearTimeout(retryState.timer);
+    retryState.type = null;
+    retryState.targetId = null;
+    retryState.fileId = null;
+    retryState.attempts = 0;
+    retryState.timer = null;
+  }
+
   function setupConn(conn, mode) {
     connRef.current = conn;
     conn.on('open', function() {
+      clearRetry();
       var qrModal = getQrModal();
       if (mode === 'direct' && qrModal && qrModal.kind === 'direct-connect') {
         setQrModal(null);
@@ -76,6 +88,7 @@ DropApp.createPeerController = function createPeerController(options) {
 
   function startDirectConnection(targetId, optionsArg) {
     var options = optionsArg || {};
+    var isRetry = options._isRetry;
     var nextPeerId = (targetId || '').trim();
     var peer = peerRef.current;
     var currentPeerId = options.fromId || (peer && peer.id) || getMyId();
@@ -87,14 +100,20 @@ DropApp.createPeerController = function createPeerController(options) {
       return false;
     }
 
-    if (getStatus() === 'connecting') {
+    if (!isRetry && getStatus() === 'connecting') {
       showToast('Already connecting to a peer.', 'info');
       return false;
     }
 
-    if (connRef.current && connRef.current.open) {
+    if (!isRetry && connRef.current && connRef.current.open) {
       showToast('Disconnect before starting another direct connection.', 'info');
       return false;
+    }
+
+    if (!isRetry) {
+      clearRetry();
+      retryState.type = 'direct';
+      retryState.targetId = nextPeerId;
     }
 
     setPeerId(nextPeerId);
@@ -111,6 +130,7 @@ DropApp.createPeerController = function createPeerController(options) {
 
   function startHostedDownload(hostId, optionsArg) {
     var options = optionsArg || {};
+    var isRetry = options._isRetry;
     var nextHostId = (hostId || '').trim();
     var nextFileId = (options.fileId || '').trim();
     var peer = peerRef.current;
@@ -123,9 +143,16 @@ DropApp.createPeerController = function createPeerController(options) {
       return false;
     }
 
-    if (getIsDownloading()) {
+    if (!isRetry && getIsDownloading()) {
       showToast('A download is already in progress.', 'info');
       return false;
+    }
+
+    if (!isRetry) {
+      clearRetry();
+      retryState.type = 'download';
+      retryState.targetId = nextHostId;
+      retryState.fileId = nextFileId;
     }
 
     if (options.downloadSession) {
@@ -258,14 +285,37 @@ DropApp.createPeerController = function createPeerController(options) {
     peer.on('error', function(err) {
       console.error('Peer error:', err);
       if (err.type === 'peer-unavailable') {
-        showToast('Peer not found. Check the ID and try again.', 'error');
-        setStatus('idle');
-        setIsDownloading(false);
-        setDownloadProgress(null);
+        // Clean up the failed connection object
+        if (connRef.current) {
+          try { connRef.current.close(); } catch (e) {}
+          connRef.current = null;
+        }
+
+        retryState.attempts += 1;
+        if (retryState.attempts < retryState.maxRetries && retryState.targetId) {
+          showToast('Peer not found. Retrying (' + retryState.attempts + '/' + retryState.maxRetries + ')...', 'info');
+          retryState.timer = setTimeout(function() {
+            if (retryState.type === 'direct') {
+              startDirectConnection(retryState.targetId, { _isRetry: true });
+            } else if (retryState.type === 'download') {
+              startHostedDownload(retryState.targetId, { _isRetry: true, fileId: retryState.fileId });
+            }
+          }, 2000);
+        } else {
+          var failMsg = retryState.type === 'download'
+            ? 'Host not found. The link may have expired.'
+            : 'Peer not found. The sender may have closed the page.';
+          clearRetry();
+          showToast(failMsg, 'error');
+          setStatus('idle');
+          setIsDownloading(false);
+          setDownloadProgress(null);
+        }
       }
     });
 
     return function() {
+      clearRetry();
       peer.destroy();
       peerRef.current = null;
     };
