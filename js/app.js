@@ -1288,7 +1288,7 @@ function App() {
     ),
 
     /* Your ID card */
-    !isDownloadSession && h('div', { style: { background:'var(--surface)', border:'1px solid var(--border)', borderRadius:16, padding:'22px 26px', marginBottom:20, animation:'fadeUp 0.5s ease 0.1s both' } },
+    !isDownloadSession && status !== 'connected' && h('div', { style: { background:'var(--surface)', border:'1px solid var(--border)', borderRadius:16, padding:'22px 26px', marginBottom:20, animation:'fadeUp 0.5s ease 0.1s both' } },
       h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:10 } }, 'Your ID'),
       h('div', { style: { display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' } },
         h('div', { style: { flex:'1 1 auto', fontFamily:"'DM Mono', monospace", fontSize:20, fontWeight:500, color: myId ? 'var(--text)' : 'var(--text-dim)', animation: myId ? 'none' : 'pulse 1.5s infinite' } }, myId || 'connecting...'),
