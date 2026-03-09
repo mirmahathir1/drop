@@ -504,9 +504,9 @@ function App() {
     });
   }
 
-  function showQrCode(title, value, subtitle) {
+  function showQrCode(title, value, subtitle, qrValue) {
     if (!value) return;
-    setQrModal({ title: title, value: value, subtitle: subtitle || '' });
+    setQrModal({ title: title, value: value, subtitle: subtitle || '', qrValue: qrValue || value });
   }
 
   function copyQrValue() {
@@ -912,7 +912,12 @@ function App() {
           }, copied ? [h(CheckIcon, { key:'ci' }), ' copied'] : [h(LinkIcon, { key:'li' }), ' copy direct connect link']),
           h('button', {
             onClick: function() {
-              showQrCode('Direct connect', directConnectLink, 'Scan to connect to ' + myId + ' without typing the link.');
+              showQrCode(
+                'Direct connect',
+                directConnectLink,
+                'Scan to connect to ' + myId + ' without typing the link.',
+                buildConnectHash(myId)
+              );
             },
             style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
             onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
@@ -1063,7 +1068,12 @@ function App() {
                 }, linkCopied === hosted.id ? [h(CheckIcon, { key:'c' }), ' copied'] : [h(CopyIcon, { key:'c' }), ' copy link']),
                 h('button', {
                   onClick: function() {
-                    showQrCode(hosted.file.name, hosted.link, 'Scan to download this file directly from the host browser.');
+                    showQrCode(
+                      hosted.file.name,
+                      hosted.link,
+                      'Scan to download this file directly from the host browser.',
+                      buildDownloadHash(myId, hosted.id)
+                    );
                   },
                   style: { display:'flex', alignItems:'center', gap:5, padding:'6px 10px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
                   onMouseEnter: function(e) { e.currentTarget.style.borderColor='var(--border-active)'; },
@@ -1104,6 +1114,7 @@ function App() {
     qrModal && h(QrModal, {
       title: qrModal.title,
       value: qrModal.value,
+      qrValue: qrModal.qrValue,
       subtitle: qrModal.subtitle,
       onClose: function() { setQrModal(null); },
       onCopy: copyQrValue

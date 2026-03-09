@@ -88,7 +88,7 @@ function ConnectionModal({ fromId, onAccept, onReject }) {
 }
 
 /* ─── QR Code Modal ─── */
-function QrModal({ title, value, subtitle, onClose, onCopy }) {
+function QrModal({ title, value, qrValue, subtitle, onClose, onCopy }) {
   const canvasRef = useRef(null);
   const [error, setError] = useState('');
 
@@ -113,9 +113,9 @@ function QrModal({ title, value, subtitle, onClose, onCopy }) {
     try {
       new window.QRious({
         element: canvas,
-        value: value,
+        value: qrValue || value,
         size: 240,
-        level: 'M',
+        level: 'L',
         foreground: '#0a0a0c',
         background: '#f8fafc'
       });
@@ -124,7 +124,7 @@ function QrModal({ title, value, subtitle, onClose, onCopy }) {
       console.error('Failed to render QR code:', err);
       setError('Failed to render the QR code.');
     }
-  }, [value]);
+  }, [qrValue, value]);
 
   return h('div', {
     onClick: onClose,

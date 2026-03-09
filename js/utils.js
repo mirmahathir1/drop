@@ -39,16 +39,24 @@ function getAppBaseUrl() {
   return window.location.origin + window.location.pathname;
 }
 
+function buildConnectHash(peerId) {
+  return '#connect=' + encodeURIComponent(peerId || '');
+}
+
 function buildConnectLink(peerId) {
-  return getAppBaseUrl() + '#connect=' + encodeURIComponent(peerId || '');
+  return getAppBaseUrl() + buildConnectHash(peerId);
+}
+
+function buildDownloadHash(peerId, fileId) {
+  var hash = '#dl=' + encodeURIComponent(peerId || '');
+  if (fileId) {
+    hash += '&file=' + encodeURIComponent(fileId);
+  }
+  return hash;
 }
 
 function buildDownloadLink(peerId, fileId) {
-  var link = getAppBaseUrl() + '#dl=' + encodeURIComponent(peerId || '');
-  if (fileId) {
-    link += '&file=' + encodeURIComponent(fileId);
-  }
-  return link;
+  return getAppBaseUrl() + buildDownloadHash(peerId, fileId);
 }
 
 function parseDropLink(value) {
