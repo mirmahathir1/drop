@@ -39,8 +39,16 @@ function getAppBaseUrl() {
   return window.location.origin + window.location.pathname;
 }
 
+function isGeneratedPeerId(value) {
+  return /^[a-z]+-[a-z]+-\d+$/i.test(value || '');
+}
+
 function buildConnectHash(peerId) {
   return '#connect=' + encodeURIComponent(peerId || '');
+}
+
+function buildConnectQrValue(peerId) {
+  return 'c:' + (peerId || '');
 }
 
 function buildConnectLink(peerId) {
@@ -53,6 +61,10 @@ function buildDownloadHash(peerId, fileId) {
     hash += '&file=' + encodeURIComponent(fileId);
   }
   return hash;
+}
+
+function buildDownloadQrValue(peerId, fileId) {
+  return 'd:' + (peerId || '') + (fileId ? ':' + fileId : '');
 }
 
 function buildDownloadLink(peerId, fileId) {
@@ -70,6 +82,30 @@ function parseDropLink(value) {
     candidate = getAppBaseUrl() + candidate;
   }
 
+  if (trimmed.indexOf('c:') === 0) {
+    var compactConnectId = trimmed.slice(2).trim();
+    if (isGeneratedPeerId(compactConnectId)) {
+      return { type: 'connect', id: compactConnectId, url: buildConnectLink(compactConnectId) };
+    }
+    return null;
+  }
+
+  if (trimmed.indexOf('d:') === 0) {
+    var compactParts = trimmed.split(':');
+    var compactDownloadId = compactParts[1] || '';
+    var compactFileId = compactParts[2] || '';
+
+    if (isGeneratedPeerId(compactDownloadId)) {
+      return {
+        type: 'download',
+        id: compactDownloadId,
+        fileId: compactFileId,
+        url: buildDownloadLink(compactDownloadId, compactFileId)
+      };
+    }
+    return null;
+  }
+
   try {
     var url = new URL(candidate, window.location.href);
     var hash = url.hash || '';
@@ -78,11 +114,11 @@ function parseDropLink(value) {
     var downloadId = params.get('dl');
     var fileId = params.get('file');
 
-    if (connectId) {
+    if (connectId && isGeneratedPeerId(connectId)) {
       return { type: 'connect', id: connectId, url: url.toString() };
     }
 
-    if (downloadId) {
+    if (downloadId && isGeneratedPeerId(downloadId)) {
       return {
         type: 'download',
         id: downloadId,
@@ -92,7 +128,7 @@ function parseDropLink(value) {
     }
   } catch (err) {}
 
-  if (/^[a-z]+-[a-z]+-\d+$/i.test(trimmed)) {
+  if (isGeneratedPeerId(trimmed)) {
     return { type: 'connect', id: trimmed, url: buildConnectLink(trimmed) };
   }
 

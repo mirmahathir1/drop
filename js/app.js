@@ -838,8 +838,18 @@ function App() {
     cancelIncomingTransfer(fileId, 'Receive cancelled.');
   }
 
+  function createHostedFileId() {
+    var id = '';
+
+    do {
+      id = Math.random().toString(36).slice(2, 8);
+    } while (!id || hostedFilesRef.current.some(function(file) { return file.id === id; }));
+
+    return id;
+  }
+
   function hostFile(file) {
-    var id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+    var id = createHostedFileId();
     var link = buildDownloadLink(myId, id);
     setHostedFiles(function(prev) { return [{ id: id, file: file, link: link }].concat(prev); });
     showToast('Link created for: ' + file.name, 'success');
@@ -916,7 +926,7 @@ function App() {
                 'Direct connect',
                 directConnectLink,
                 'Scan to connect to ' + myId + ' without typing the link.',
-                buildConnectHash(myId)
+                buildConnectQrValue(myId)
               );
             },
             style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },
@@ -1072,7 +1082,7 @@ function App() {
                       hosted.file.name,
                       hosted.link,
                       'Scan to download this file directly from the host browser.',
-                      buildDownloadHash(myId, hosted.id)
+                      buildDownloadQrValue(myId, hosted.id)
                     );
                   },
                   style: { display:'flex', alignItems:'center', gap:5, padding:'6px 10px', borderRadius:7, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, transition:'all 0.2s' },
