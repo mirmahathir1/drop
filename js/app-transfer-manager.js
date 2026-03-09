@@ -53,21 +53,6 @@ DropApp.createTransferManager = function createTransferManager(options) {
     }
   }
 
-  function clearTransferHistory() {
-    var transfers = transfersRef.current || [];
-
-    for (var i = 0; i < transfers.length; i++) {
-      if (transfers[i] && transfers[i].url) {
-        try {
-          URL.revokeObjectURL(transfers[i].url);
-        } catch (err) {}
-      }
-    }
-
-    transfersRef.current = [];
-    setTransfers([]);
-  }
-
   async function getTransferDirectory(createIfMissing) {
     if (!navigator.storage || !navigator.storage.getDirectory) return null;
 
@@ -471,7 +456,6 @@ DropApp.createTransferManager = function createTransferManager(options) {
     cancelIncomingTransfer: cancelIncomingTransfer,
     cancelOutgoingTransfer: cancelOutgoingTransfer,
     cleanupConnectionTransfers: cleanupConnectionTransfers,
-    clearTransferHistory: clearTransferHistory,
     getTransferDirectory: getTransferDirectory,
     handleData: handleData,
     startOutgoingTransfer: startOutgoingTransfer

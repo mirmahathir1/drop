@@ -77,7 +77,8 @@ DropApp.AppView = function AppView(props) {
                 'Direct connect',
                 directConnectLink,
                 'Scan to connect to ' + myId + ' without typing the link.',
-                buildConnectQrValue(myId)
+                buildConnectQrValue(myId),
+                'direct-connect'
               );
             },
             style: { display:'flex', alignItems:'center', justifyContent:'center', gap:6, padding:'7px 14px', borderRadius:8, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor:'pointer', fontFamily:"'DM Mono', monospace", fontSize:12, transition:'all 0.2s', whiteSpace:'nowrap' },

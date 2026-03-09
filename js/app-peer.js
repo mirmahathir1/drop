@@ -19,7 +19,6 @@ DropApp.createPeerController = function createPeerController(options) {
   var connRef = options.connRef;
   var hostedFilesRef = options.hostedFilesRef;
   var currentReceiveFileIdRef = options.currentReceiveFileIdRef;
-  var clearTransferHistory = options.clearTransferHistory;
   var cleanupConnectionTransfers = options.cleanupConnectionTransfers;
   var handleData = options.handleData;
   var startOutgoingTransfer = options.startOutgoingTransfer;
@@ -27,13 +26,16 @@ DropApp.createPeerController = function createPeerController(options) {
   function setupConn(conn, mode) {
     connRef.current = conn;
     conn.on('open', function() {
+      var qrModal = getQrModal();
+      if (mode === 'direct' && qrModal && qrModal.kind === 'direct-connect') {
+        setQrModal(null);
+      }
       setStatus('connected');
       showToast('Connected! You can now send files.', 'success');
     });
     conn.on('data', function(data) { handleData(conn, data, mode); });
     conn.on('close', function() {
       cleanupConnectionTransfers(conn);
-      clearTransferHistory();
       setStatus('idle');
       connRef.current = null;
       showToast('Peer disconnected.', 'error');
@@ -44,9 +46,15 @@ DropApp.createPeerController = function createPeerController(options) {
     });
   }
 
-  function showQrCode(title, value, subtitle, qrValue) {
+  function showQrCode(title, value, subtitle, qrValue, kind) {
     if (!value) return;
-    setQrModal({ title: title, value: value, subtitle: subtitle || '', qrValue: qrValue || value });
+    setQrModal({
+      title: title,
+      value: value,
+      subtitle: subtitle || '',
+      qrValue: qrValue || value,
+      kind: kind || ''
+    });
   }
 
   async function copyQrValue() {

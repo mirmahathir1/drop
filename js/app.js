@@ -93,7 +93,6 @@ function App() {
     connRef: connRef,
     hostedFilesRef: hostedFilesRef,
     currentReceiveFileIdRef: currentReceiveFileIdRef,
-    clearTransferHistory: transferController.clearTransferHistory,
     cleanupConnectionTransfers: transferController.cleanupConnectionTransfers,
     handleData: transferController.handleData,
     startOutgoingTransfer: transferController.startOutgoingTransfer
@@ -216,7 +215,6 @@ function App() {
 
   function disconnect() {
     if (connRef.current) connRef.current.close();
-    transferController.clearTransferHistory();
     connRef.current = null;
     setStatus('idle');
     setPeerId('');
