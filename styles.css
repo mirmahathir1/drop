@@ -516,8 +516,7 @@ button:disabled {
 }
 
 @media (max-width: 920px) {
-  .workflow-grid,
-  .choice-grid {
+  .workflow-grid {
     grid-template-columns: 1fr;
   }
 
@@ -532,13 +531,26 @@ button:disabled {
     padding: 36px 16px 64px;
   }
 
+  .choice-grid {
+    gap: 16px;
+  }
+
   .mode-toolbar {
     flex-direction: column;
     align-items: stretch;
   }
 
   .round-action {
-    padding: 24px;
+    padding: 18px;
+  }
+
+  .round-action__icon {
+    width: 68px;
+    height: 68px;
+  }
+
+  .round-action__label {
+    font-size: 1.2rem;
   }
 
   .surface-card {
@@ -548,5 +560,25 @@ button:disabled {
 
   .dropzone {
     padding: 36px 20px;
+  }
+}
+
+@media (max-width: 420px) {
+  .choice-grid {
+    gap: 12px;
+  }
+
+  .round-action {
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .round-action__icon {
+    width: 56px;
+    height: 56px;
+  }
+
+  .round-action__label {
+    font-size: 1rem;
   }
 }
