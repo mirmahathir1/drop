@@ -4,12 +4,12 @@ function App() {
   const [peerId, setPeerId] = useState('');
   const [status, setStatus] = useState('idle');
   const [toast, setToast] = useState(null);
-  const [pendingRequest, setPendingRequest] = useState(null);
   const [transfers, setTransfers] = useState([]);
   const [dragging, setDragging] = useState(false);
   const [copied, setCopied] = useState(false);
   const [sendProgress, setSendProgress] = useState(null);
   const [receiveProgress, setReceiveProgress] = useState(null);
+  const [zipProgress, setZipProgress] = useState(null);
 
   const [hostedFiles, setHostedFiles] = useState([]);
   const [linkDragging, setLinkDragging] = useState(false);
@@ -29,6 +29,8 @@ function App() {
   const hostedFilesRef = useRef([]);
   const storageRootRef = useRef(null);
   const storageWarningShownRef = useRef(false);
+  const zipTaskIdRef = useRef(0);
+  const zipBusyRef = useRef(false);
 
   const CHUNK_SIZE = 64 * 1024;
   const TRANSFER_STORAGE_DIR = 'drop-transfers';
@@ -70,6 +72,328 @@ function App() {
     if (fileBuild.mode === 'download') {
       setIsDownloading(false);
       setDownloadProgress(null);
+    }
+  }
+
+  function getSelectedFiles(fileList) {
+    return Array.prototype.slice.call(fileList || []).filter(function(file) {
+      return !!file && typeof file.size === 'number' && typeof file.name === 'string';
+    });
+  }
+
+  function totalSizeFromFiles(files) {
+    var total = 0;
+
+    for (var i = 0; i < files.length; i++) {
+      total += files[i].size || 0;
+    }
+
+    return total;
+  }
+
+  function describeSelection(selection) {
+    if (!selection || !selection.itemCount) return '0 items';
+    if (selection.folderCount === 1 && selection.itemCount === 1) return '1 folder';
+    if (selection.folderCount > 0) return selection.itemCount + ' items';
+    return selection.itemCount + ' files';
+  }
+
+  function finalizeSelection(selection) {
+    var next = selection || {
+      entries: [],
+      directories: [],
+      itemCount: 0,
+      folderCount: 0,
+      looseFileCount: 0,
+      topLevelNames: []
+    };
+
+    next.entries = next.entries || [];
+    next.directories = next.directories || [];
+    next.topLevelNames = next.topLevelNames || [];
+    next.itemCount = next.itemCount || next.topLevelNames.length;
+    next.folderCount = next.folderCount || 0;
+    next.looseFileCount = next.looseFileCount || 0;
+    next.isSinglePlainFile =
+      next.folderCount === 0 &&
+      next.looseFileCount === 1 &&
+      next.itemCount === 1 &&
+      next.entries.length === 1;
+    next.isSingleFolder =
+      next.folderCount === 1 &&
+      next.looseFileCount === 0 &&
+      next.itemCount === 1;
+
+    return next;
+  }
+
+  function buildSelectionFromFileList(fileList) {
+    var files = getSelectedFiles(fileList);
+    var selection = {
+      entries: [],
+      directories: [],
+      itemCount: 0,
+      folderCount: 0,
+      looseFileCount: 0,
+      topLevelNames: []
+    };
+    var folderRoots = {};
+
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      var relativePath = file.webkitRelativePath || '';
+
+      if (relativePath && relativePath.indexOf('/') !== -1) {
+        var archivePath = normalizeArchivePath(relativePath, file.name);
+        var rootName = archivePath.split('/')[0];
+
+        selection.entries.push({
+          file: file,
+          archivePath: archivePath,
+          label: relativePath
+        });
+
+        if (!folderRoots[rootName]) {
+          folderRoots[rootName] = true;
+          selection.folderCount += 1;
+          selection.itemCount += 1;
+          selection.topLevelNames.push(rootName);
+        }
+      } else {
+        selection.entries.push({
+          file: file,
+          archivePath: normalizeArchivePath(file.name, file.name),
+          label: file.name
+        });
+        selection.looseFileCount += 1;
+        selection.itemCount += 1;
+        selection.topLevelNames.push(file.name);
+      }
+    }
+
+    return finalizeSelection(selection);
+  }
+
+  function getDataTransferItemEntry(item) {
+    if (!item) return null;
+    if (typeof item.getAsEntry === 'function') return item.getAsEntry();
+    if (typeof item.webkitGetAsEntry === 'function') return item.webkitGetAsEntry();
+    return null;
+  }
+
+  function readFileFromEntry(entry) {
+    return new Promise(function(resolve, reject) {
+      entry.file(resolve, reject);
+    });
+  }
+
+  function readAllDirectoryEntries(reader) {
+    return new Promise(function(resolve, reject) {
+      var entries = [];
+
+      function readBatch() {
+        reader.readEntries(
+          function(batch) {
+            if (!batch || !batch.length) {
+              resolve(entries);
+              return;
+            }
+
+            entries = entries.concat(Array.prototype.slice.call(batch));
+            readBatch();
+          },
+          function(err) {
+            reject(err);
+          }
+        );
+      }
+
+      readBatch();
+    });
+  }
+
+  async function collectDroppedEntry(entry, parentPath, selection) {
+    var nextPath = parentPath ? parentPath + '/' + entry.name : entry.name;
+
+    if (entry.isDirectory) {
+      selection.directories.push(normalizeArchivePath(nextPath, entry.name));
+
+      var children = await readAllDirectoryEntries(entry.createReader());
+      for (var i = 0; i < children.length; i++) {
+        await collectDroppedEntry(children[i], nextPath, selection);
+      }
+      return;
+    }
+
+    if (!entry.isFile) return;
+
+    var file = await readFileFromEntry(entry);
+    selection.entries.push({
+      file: file,
+      archivePath: normalizeArchivePath(nextPath, file.name),
+      label: nextPath
+    });
+  }
+
+  async function buildSelectionFromDrop(dataTransfer) {
+    var items = Array.prototype.slice.call((dataTransfer && dataTransfer.items) || []).filter(function(item) {
+      return item && item.kind === 'file';
+    });
+    var droppedEntries = [];
+
+    for (var i = 0; i < items.length; i++) {
+      var entry = getDataTransferItemEntry(items[i]);
+      if (entry) {
+        droppedEntries.push(entry);
+      }
+    }
+
+    if (!droppedEntries.length) {
+      return buildSelectionFromFileList(dataTransfer && dataTransfer.files);
+    }
+
+    var selection = {
+      entries: [],
+      directories: [],
+      itemCount: 0,
+      folderCount: 0,
+      looseFileCount: 0,
+      topLevelNames: []
+    };
+
+    for (var j = 0; j < droppedEntries.length; j++) {
+      var droppedEntry = droppedEntries[j];
+
+      selection.itemCount += 1;
+      selection.topLevelNames.push(droppedEntry.name || 'item');
+
+      if (droppedEntry.isDirectory) {
+        selection.folderCount += 1;
+      } else {
+        selection.looseFileCount += 1;
+      }
+
+      await collectDroppedEntry(droppedEntry, '', selection);
+    }
+
+    return finalizeSelection(selection);
+  }
+
+  async function buildSelectionFile(selection, action) {
+    var nextSelection = finalizeSelection(selection);
+
+    if (!nextSelection.entries.length && !nextSelection.directories.length) {
+      showToast('No files were found in that selection.', 'error');
+      return null;
+    }
+
+    if (nextSelection.isSinglePlainFile) {
+      return {
+        file: nextSelection.entries[0].file,
+        sourceCount: 1,
+        folderCount: 0
+      };
+    }
+
+    if (!window.JSZip || typeof window.JSZip !== 'function') {
+      showToast('Zip support is unavailable right now. Refresh and try again.', 'error');
+      return null;
+    }
+
+    if (zipBusyRef.current) {
+      showToast('A zip archive is already being prepared.', 'info');
+      return null;
+    }
+
+    var archiveName = nextSelection.isSingleFolder
+      ? buildNamedArchiveFileName(nextSelection.topLevelNames[0])
+      : buildArchiveFileName(
+          nextSelection.itemCount || nextSelection.entries.length || 1,
+          nextSelection.folderCount > 0 ? 'items' : 'files'
+        );
+    var totalBytes = totalSizeFromFiles(
+      nextSelection.entries.map(function(entry) { return entry.file; })
+    );
+    var jobId = ++zipTaskIdRef.current;
+    var zip = new window.JSZip();
+    var usedNames = {};
+    var directories = nextSelection.directories.slice().sort(function(a, b) {
+      return a.length - b.length;
+    });
+
+    zipBusyRef.current = true;
+    setZipProgress({
+      action: action,
+      name: archiveName,
+      sourceLabel: describeSelection(nextSelection),
+      totalBytes: totalBytes,
+      percent: 0,
+      currentFile: nextSelection.entries[0]
+        ? nextSelection.entries[0].label
+        : nextSelection.topLevelNames[0] || archiveName
+    });
+
+    try {
+      for (var d = 0; d < directories.length; d++) {
+        zip.folder(directories[d]);
+      }
+
+      for (var f = 0; f < nextSelection.entries.length; f++) {
+        var sourceEntry = nextSelection.entries[f];
+        zip.file(
+          ensureUniqueArchiveEntryName(sourceEntry.archivePath, usedNames),
+          sourceEntry.file,
+          { binary: true }
+        );
+      }
+
+      var blob = await zip.generateAsync(
+        {
+          type: 'blob',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 }
+        },
+        function(metadata) {
+          if (zipTaskIdRef.current !== jobId) return;
+
+          setZipProgress({
+            action: action,
+            name: archiveName,
+            sourceLabel: describeSelection(nextSelection),
+            totalBytes: totalBytes,
+            percent: Math.max(1, Math.min(100, Math.round(metadata.percent || 0))),
+            currentFile: metadata.currentFile || ''
+          });
+        }
+      );
+
+      var archiveFile;
+
+      try {
+        archiveFile = new File([blob], archiveName, {
+          type: 'application/zip',
+          lastModified: Date.now()
+        });
+      } catch (fileErr) {
+        archiveFile = blob;
+        archiveFile.name = archiveName;
+        archiveFile.lastModified = Date.now();
+      }
+
+      return {
+        file: archiveFile,
+        sourceCount: nextSelection.itemCount,
+        folderCount: nextSelection.folderCount
+      };
+    } catch (err) {
+      console.error('Failed to create zip archive:', err);
+      showToast('Failed to create the zip archive.', 'error');
+      return null;
+    } finally {
+      if (zipTaskIdRef.current === jobId) {
+        zipBusyRef.current = false;
+        setZipProgress(null);
+      }
     }
   }
 
@@ -472,17 +796,6 @@ function App() {
       return;
     }
 
-    if (data.type === 'accept') {
-      setStatus('connected');
-      showToast('Connection accepted!', 'success');
-      return;
-    }
-
-    if (data.type === 'reject') {
-      setStatus('idle');
-      connRef.current = null;
-      showToast('Connection declined.', 'error');
-    }
   }
 
   function setupConn(conn, mode) {
@@ -509,10 +822,15 @@ function App() {
     setQrModal({ title: title, value: value, subtitle: subtitle || '', qrValue: qrValue || value });
   }
 
-  function copyQrValue() {
+  async function copyQrValue() {
     if (!qrModal) return;
-    navigator.clipboard.writeText(qrModal.value);
-    showToast('Link copied.', 'success');
+    try {
+      await copyTextToClipboard(qrModal.value);
+      showToast('Link copied.', 'success');
+    } catch (err) {
+      console.error('Failed to copy QR value:', err);
+      showToast('Could not copy the link on this browser.', 'error');
+    }
   }
 
   function startDirectConnection(targetId, options) {
@@ -542,7 +860,7 @@ function App() {
     setStatus('connecting');
 
     var conn = peer.connect(nextPeerId, {
-      metadata: { type: 'request', fromId: currentPeerId },
+      metadata: { type: 'direct', fromId: currentPeerId },
       reliable: true
     });
 
@@ -718,8 +1036,8 @@ function App() {
           console.error('Hosted download error:', err);
           cleanupConnectionTransfers(conn);
         });
-      } else if (conn.metadata && conn.metadata.type === 'request') {
-        setPendingRequest({ fromId: conn.metadata.fromId, conn: conn });
+      } else if (conn.metadata && conn.metadata.type === 'direct') {
+        setupConn(conn, 'direct');
       }
     });
 
@@ -742,29 +1060,6 @@ function App() {
     startDirectConnection(peerId);
   }
 
-  function acceptRequest() {
-    if (!pendingRequest) return;
-    var conn = pendingRequest.conn;
-    setupConn(conn, 'direct');
-    conn.on('open', function() {
-      conn.send({ type: 'accept' });
-      setStatus('connected');
-    });
-    if (conn.open) {
-      conn.send({ type: 'accept' });
-      setStatus('connected');
-    }
-    setPendingRequest(null);
-  }
-
-  function rejectRequest() {
-    if (!pendingRequest) return;
-    var conn = pendingRequest.conn;
-    conn.on('open', function() { conn.send({ type: 'reject' }); });
-    if (conn.open) conn.send({ type: 'reject' });
-    setPendingRequest(null);
-  }
-
   function sendFile(file) {
     var conn = connRef.current;
     if (!conn || !conn.open) {
@@ -772,6 +1067,40 @@ function App() {
       return;
     }
     startOutgoingTransfer(conn, file, { trackProgress: true });
+  }
+
+  async function sendSelection(selection) {
+    var normalized = selection && selection.entries ? selection : buildSelectionFromFileList(selection);
+    var selectionFile = await buildSelectionFile(normalized, 'send');
+    if (!selectionFile || !selectionFile.file) return;
+    sendFile(selectionFile.file);
+  }
+
+  async function sendSelectedFiles(fileList) {
+    await sendSelection(buildSelectionFromFileList(fileList));
+  }
+
+  async function sendSelectedFolder(fileList) {
+    await sendSelection(buildSelectionFromFileList(fileList));
+  }
+
+  async function sendDroppedSelection(dataTransfer) {
+    var selection = await buildSelectionFromDrop(dataTransfer);
+    if (!selection) return;
+    await sendSelection(selection);
+  }
+
+  function openPicker(inputId, e) {
+    if (e) {
+      e.stopPropagation();
+    }
+
+    if (zipBusyRef.current) return;
+
+    var input = document.getElementById(inputId);
+    if (input) {
+      input.click();
+    }
   }
 
   function onDragOver(e) {
@@ -786,25 +1115,34 @@ function App() {
     setDragging(false);
   }
 
-  function onDrop(e) {
+  async function onDrop(e) {
     e.preventDefault();
     e.stopPropagation();
     setDragging(false);
-    var files = e.dataTransfer.files;
-    for (var i = 0; i < files.length; i++) sendFile(files[i]);
+    await sendDroppedSelection(e.dataTransfer);
   }
 
-  function onFileSelect(e) {
-    var files = e.target.files;
-    for (var i = 0; i < files.length; i++) sendFile(files[i]);
+  async function onFileSelect(e) {
+    await sendSelectedFiles(e.target.files);
     e.target.value = '';
   }
 
-  function copyId() {
+  async function onFolderSelect(e) {
+    await sendSelectedFolder(e.target.files);
+    e.target.value = '';
+  }
+
+  async function copyId() {
     var link = buildConnectLink(myId);
-    navigator.clipboard.writeText(link);
-    setCopied(true);
-    setTimeout(function() { setCopied(false); }, 2000);
+    try {
+      await copyTextToClipboard(link);
+      setCopied(true);
+      setTimeout(function() { setCopied(false); }, 2000);
+      showToast('Direct connect link copied.', 'success');
+    } catch (err) {
+      console.error('Failed to copy direct connect link:', err);
+      showToast('Could not copy the direct connect link.', 'error');
+    }
   }
 
   function disconnect() {
@@ -848,11 +1186,18 @@ function App() {
     return id;
   }
 
-  function hostFile(file) {
+  function hostFile(file, options) {
+    var settings = options || {};
     var id = createHostedFileId();
     var link = buildDownloadLink(myId, id);
-    setHostedFiles(function(prev) { return [{ id: id, file: file, link: link }].concat(prev); });
-    showToast('Link created for: ' + file.name, 'success');
+    var sourceCount = settings.sourceCount || 1;
+    var folderCount = settings.folderCount || 0;
+
+    setHostedFiles(function(prev) {
+      return [{ id: id, file: file, link: link, sourceCount: sourceCount, folderCount: folderCount }].concat(prev);
+    });
+
+    showToast((sourceCount > 1 || folderCount > 0 ? 'Zip link created: ' : 'Link created for: ') + file.name, 'success');
   }
 
   function removeHostedFile(id) {
@@ -861,10 +1206,16 @@ function App() {
     });
   }
 
-  function copyLink(link, id) {
-    navigator.clipboard.writeText(link);
-    setLinkCopied(id);
-    setTimeout(function() { setLinkCopied(null); }, 2000);
+  async function copyLink(link, id) {
+    try {
+      await copyTextToClipboard(link);
+      setLinkCopied(id);
+      setTimeout(function() { setLinkCopied(null); }, 2000);
+      showToast('Link copied.', 'success');
+    } catch (err) {
+      console.error('Failed to copy hosted link:', err);
+      showToast('Could not copy the link.', 'error');
+    }
   }
 
   function onLinkDragOver(e) {
@@ -879,23 +1230,51 @@ function App() {
     setLinkDragging(false);
   }
 
-  function onLinkDrop(e) {
+  async function hostSelection(selection) {
+    var normalized = selection && selection.entries ? selection : buildSelectionFromFileList(selection);
+    var selectionFile = await buildSelectionFile(normalized, 'link');
+    if (!selectionFile || !selectionFile.file) return;
+    hostFile(selectionFile.file, {
+      sourceCount: selectionFile.sourceCount,
+      folderCount: selectionFile.folderCount
+    });
+  }
+
+  async function hostSelectedFiles(fileList) {
+    await hostSelection(buildSelectionFromFileList(fileList));
+  }
+
+  async function hostSelectedFolder(fileList) {
+    await hostSelection(buildSelectionFromFileList(fileList));
+  }
+
+  async function hostDroppedSelection(dataTransfer) {
+    var selection = await buildSelectionFromDrop(dataTransfer);
+    if (!selection) return;
+    await hostSelection(selection);
+  }
+
+  async function onLinkDrop(e) {
     e.preventDefault();
     e.stopPropagation();
     setLinkDragging(false);
-    var files = e.dataTransfer.files;
-    for (var i = 0; i < files.length; i++) hostFile(files[i]);
+    await hostDroppedSelection(e.dataTransfer);
   }
 
-  function onLinkFileSelect(e) {
-    var files = e.target.files;
-    for (var i = 0; i < files.length; i++) hostFile(files[i]);
+  async function onLinkFileSelect(e) {
+    await hostSelectedFiles(e.target.files);
+    e.target.value = '';
+  }
+
+  async function onLinkFolderSelect(e) {
+    await hostSelectedFolder(e.target.files);
     e.target.value = '';
   }
 
   /* Render */
   var directConnectLink = myId ? buildConnectLink(myId) : '';
   var scannerDisabled = !myId || status === 'connecting' || isDownloading;
+  var isPackagingZip = !!zipProgress;
 
   return h('div', { style: { maxWidth: 520, margin: '0 auto', padding: '60px 20px 80px', minHeight: '100vh' } },
 
@@ -996,15 +1375,47 @@ function App() {
       /* Drop zone */
       h('div', {
         onDragOver: onDragOver, onDragLeave: onDragLeave, onDrop: onDrop,
-        onClick: function() { document.getElementById('file-input').click(); },
-        style: { border: '2px dashed ' + (dragging ? 'var(--accent)' : 'var(--border)'), borderRadius:20, padding:'50px 30px', textAlign:'center', cursor:'pointer', transition:'all 0.3s', background: dragging ? 'var(--accent-glow)' : 'var(--surface)', marginBottom:24, animation:'fadeUp 0.4s ease' },
-        onMouseEnter: function(e) { if (!dragging) { e.currentTarget.style.borderColor='var(--border-active)'; e.currentTarget.style.background='var(--surface-2)'; } },
+        onClick: function() {
+          if (!isPackagingZip) {
+            openPicker('file-input');
+          }
+        },
+        style: { border: '2px dashed ' + (dragging ? 'var(--accent)' : 'var(--border)'), borderRadius:20, padding:'50px 30px', textAlign:'center', cursor: isPackagingZip ? 'wait' : 'pointer', transition:'all 0.3s', background: dragging ? 'var(--accent-glow)' : 'var(--surface)', marginBottom:24, animation:'fadeUp 0.4s ease', opacity: isPackagingZip ? 0.78 : 1 },
+        onMouseEnter: function(e) { if (!dragging && !isPackagingZip) { e.currentTarget.style.borderColor='var(--border-active)'; e.currentTarget.style.background='var(--surface-2)'; } },
         onMouseLeave: function(e) { if (!dragging) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.background='var(--surface)'; } }
       },
         h('div', { style: { marginBottom:14 } }, h(UploadIcon, { stroke: dragging ? 'var(--accent)' : 'var(--text-dim)', style: { transition:'all 0.3s' } })),
-        h('div', { style: { fontSize:16, fontWeight:500, marginBottom:6, color: dragging ? 'var(--accent)' : 'var(--text)' } }, dragging ? 'Drop to send' : 'Drag & drop files here'),
-        h('div', { style: { color:'var(--text-dim)', fontSize:13, fontWeight:300 } }, 'or click to browse'),
-        h('input', { id: 'file-input', type: 'file', multiple: true, style: { display:'none' }, onChange: onFileSelect })
+        h('div', { style: { fontSize:16, fontWeight:500, marginBottom:6, color: dragging ? 'var(--accent)' : 'var(--text)' } }, dragging ? 'Drop to send' : 'Drag & drop files or folders here'),
+        h('div', { style: { color:'var(--text-dim)', fontSize:13, fontWeight:300 } }, 'click to browse files · folders keep their name when zipped'),
+        h('div', { style: { display:'flex', justifyContent:'center', gap:10, flexWrap:'wrap', marginTop:14 } },
+          h('button', {
+            onClick: function(e) { openPicker('file-input', e); },
+            disabled: isPackagingZip,
+            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor: isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: isPackagingZip ? 0.6 : 1 }
+          }, 'browse files'),
+          h('button', {
+            onClick: function(e) { openPicker('folder-input', e); },
+            disabled: isPackagingZip,
+            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface-2)', color:'var(--text-dim)', cursor: isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: isPackagingZip ? 0.6 : 1 }
+          }, 'choose folder')
+        ),
+        h('input', { id: 'file-input', type: 'file', multiple: true, style: { display:'none' }, onChange: onFileSelect, disabled: isPackagingZip }),
+        h('input', { id: 'folder-input', type: 'file', webkitdirectory: true, multiple: true, style: { display:'none' }, onChange: onFolderSelect, disabled: isPackagingZip })
+      )
+    ),
+
+    /* Zip progress */
+    zipProgress && h('div', { style: { background:'var(--surface)', border:'1px solid rgba(251,191,36,0.28)', borderRadius:14, padding:'16px 22px', marginBottom:20, animation:'fadeUp 0.3s ease' } },
+      h('div', { style: { display:'flex', justifyContent:'space-between', alignItems:'center', gap:12, marginBottom:8 } },
+        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--warning)', textTransform:'uppercase', letterSpacing:1 } }, 'Creating zip archive'),
+        h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:12, color:'var(--warning)', flexShrink:0 } }, zipProgress.percent + '%')
+      ),
+      h('div', { style: { fontSize:13, fontWeight:500, marginBottom:6, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, zipProgress.name),
+      h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', marginBottom:10, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } },
+        zipProgress.sourceLabel + ' · ' + formatBytes(zipProgress.totalBytes) + ' · ' + (zipProgress.action === 'link' ? 'preparing share link' : 'preparing to send') + (zipProgress.currentFile ? ' · ' + zipProgress.currentFile : '')
+      ),
+      h('div', { style: { height:6, borderRadius:3, background:'var(--surface-2)', overflow:'hidden' } },
+        h('div', { style: { height:'100%', borderRadius:3, background:'linear-gradient(90deg, #f59e0b, #fbbf24)', width: zipProgress.percent + '%', transition:'width 0.15s ease' } })
       )
     ),
 
@@ -1051,15 +1462,32 @@ function App() {
       h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:14, display:'flex', alignItems:'center', gap:8 } }, h(ShareIcon), ' Create Download Link'),
       h('div', {
         onDragOver: onLinkDragOver, onDragLeave: onLinkDragLeave, onDrop: onLinkDrop,
-        onClick: function() { document.getElementById('link-file-input').click(); },
-        style: { border: '2px dashed ' + (linkDragging ? '#818cf8' : 'var(--border)'), borderRadius:14, padding:'32px 20px', textAlign:'center', cursor: myId ? 'pointer' : 'not-allowed', transition:'all 0.3s', background: linkDragging ? 'rgba(99,102,241,0.08)' : 'transparent', opacity: myId ? 1 : 0.5 },
-        onMouseEnter: function(e) { if (!linkDragging && myId) { e.currentTarget.style.borderColor='var(--border-active)'; e.currentTarget.style.background='var(--surface-2)'; } },
+        onClick: function() {
+          if (myId && !isPackagingZip) {
+            openPicker('link-file-input');
+          }
+        },
+        style: { border: '2px dashed ' + (linkDragging ? '#818cf8' : 'var(--border)'), borderRadius:14, padding:'32px 20px', textAlign:'center', cursor: !myId ? 'not-allowed' : isPackagingZip ? 'wait' : 'pointer', transition:'all 0.3s', background: linkDragging ? 'rgba(99,102,241,0.08)' : 'transparent', opacity: !myId ? 0.5 : isPackagingZip ? 0.78 : 1 },
+        onMouseEnter: function(e) { if (!linkDragging && myId && !isPackagingZip) { e.currentTarget.style.borderColor='var(--border-active)'; e.currentTarget.style.background='var(--surface-2)'; } },
         onMouseLeave: function(e) { if (!linkDragging) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.background='transparent'; } }
       },
         h('div', { style: { marginBottom:10 } }, h(LinkDropIcon, { stroke: linkDragging ? '#818cf8' : 'var(--text-dim)', style: { transition:'all 0.3s' } })),
-        h('div', { style: { fontSize:14, fontWeight:500, marginBottom:4, color: linkDragging ? '#818cf8' : 'var(--text)' } }, linkDragging ? 'Drop to create link' : 'Drop a file to create a shareable link'),
-        h('div', { style: { color:'var(--text-dim)', fontSize:12, fontWeight:300 } }, 'Anyone with the link can download directly from your browser'),
-        h('input', { id: 'link-file-input', type: 'file', style: { display:'none' }, onChange: onLinkFileSelect, disabled: !myId })
+        h('div', { style: { fontSize:14, fontWeight:500, marginBottom:4, color: linkDragging ? '#818cf8' : 'var(--text)' } }, linkDragging ? 'Drop to create link' : 'Drop files or folders to create a shareable link'),
+        h('div', { style: { color:'var(--text-dim)', fontSize:12, fontWeight:300 } }, 'Anyone with the link can download directly from your browser · folders are zipped under their own name'),
+        h('div', { style: { display:'flex', justifyContent:'center', gap:10, flexWrap:'wrap', marginTop:14 } },
+          h('button', {
+            onClick: function(e) { openPicker('link-file-input', e); },
+            disabled: !myId || isPackagingZip,
+            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor: !myId || isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: !myId || isPackagingZip ? 0.6 : 1 }
+          }, 'browse files'),
+          h('button', {
+            onClick: function(e) { openPicker('link-folder-input', e); },
+            disabled: !myId || isPackagingZip,
+            style: { padding:'8px 14px', borderRadius:9, border:'1px solid var(--border)', background:'var(--surface)', color:'var(--text-dim)', cursor: !myId || isPackagingZip ? 'not-allowed' : 'pointer', fontFamily:"'DM Mono', monospace", fontSize:11, opacity: !myId || isPackagingZip ? 0.6 : 1 }
+          }, 'choose folder')
+        ),
+        h('input', { id: 'link-file-input', type: 'file', multiple: true, style: { display:'none' }, onChange: onLinkFileSelect, disabled: !myId || isPackagingZip }),
+        h('input', { id: 'link-folder-input', type: 'file', webkitdirectory: true, multiple: true, style: { display:'none' }, onChange: onLinkFolderSelect, disabled: !myId || isPackagingZip })
       ),
 
       /* Hosted files list */
@@ -1096,7 +1524,7 @@ function App() {
                   onMouseLeave: function(e) { e.currentTarget.style.borderColor='var(--border)'; e.currentTarget.style.color='var(--text-dim)'; }
                 }, h(XIcon), ' cancel')
               ),
-              h('div', { style: { color:'var(--text-dim)', fontSize:11, fontFamily:"'DM Mono', monospace", marginTop:2 } }, formatBytes(hosted.file.size) + ' · sharing via link')
+              h('div', { style: { color:'var(--text-dim)', fontSize:11, fontFamily:"'DM Mono', monospace", marginTop:2 } }, formatBytes(hosted.file.size) + ' · ' + (hosted.folderCount === 1 && hosted.sourceCount === 1 ? 'folder zipped for sharing' : hosted.folderCount > 0 ? hosted.sourceCount + ' items zipped for sharing' : hosted.sourceCount > 1 ? hosted.sourceCount + ' files zipped for sharing' : 'sharing via link'))
             )
           );
         }),
@@ -1116,9 +1544,6 @@ function App() {
       h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, color:'var(--text-dim)', letterSpacing:1, textTransform:'uppercase', marginBottom:12, paddingLeft:4 } }, 'Transfers'),
       [].concat(transfers).reverse().map(function(t, i) { return h(TransferItem, { key: i, file: t, direction: t.direction }); })
     ),
-
-    /* Connection request modal */
-    pendingRequest && h(ConnectionModal, { fromId: pendingRequest.fromId, onAccept: acceptRequest, onReject: rejectRequest }),
 
     /* QR modals */
     qrModal && h(QrModal, {

@@ -35,6 +35,77 @@ function sanitizeFileName(name) {
   return (name || 'download').replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
 
+function buildArchiveTimestamp() {
+  var now = new Date();
+  return (
+    String(now.getFullYear()) +
+    String(now.getMonth() + 1).padStart(2, '0') +
+    String(now.getDate()).padStart(2, '0') +
+    '-' +
+    String(now.getHours()).padStart(2, '0') +
+    String(now.getMinutes()).padStart(2, '0') +
+    String(now.getSeconds()).padStart(2, '0')
+  );
+}
+
+function normalizeArchiveSegment(name, fallback) {
+  var value = String(name || '')
+    .replace(/[\\/]+/g, ' ')
+    .replace(/[\u0000-\u001f\u007f]+/g, '')
+    .trim();
+
+  return value || (fallback || 'file');
+}
+
+function normalizeArchivePath(path, fallback) {
+  var raw = String(path || '');
+  var normalized = raw
+    .split('/')
+    .map(function(part) { return normalizeArchiveSegment(part, ''); })
+    .filter(function(part) { return !!part; })
+    .join('/');
+
+  return normalized || normalizeArchiveSegment(fallback || 'file');
+}
+
+function buildArchiveFileName(itemCount, noun) {
+  var label = normalizeArchiveSegment(noun || 'files', 'files');
+  var timestamp = buildArchiveTimestamp();
+
+  return 'drop-' + Math.max(1, itemCount || 0) + '-' + label + '-' + timestamp + '.zip';
+}
+
+function buildNamedArchiveFileName(name) {
+  return normalizeArchiveSegment(name, 'folder') + '.zip';
+}
+
+function ensureUniqueArchiveEntryName(name, usedNames) {
+  var taken = usedNames || {};
+  var safeName = normalizeArchivePath(name, 'file');
+
+  if (!taken[safeName]) {
+    taken[safeName] = true;
+    return safeName;
+  }
+
+  var slashIndex = safeName.lastIndexOf('/');
+  var dir = slashIndex >= 0 ? safeName.slice(0, slashIndex + 1) : '';
+  var leaf = slashIndex >= 0 ? safeName.slice(slashIndex + 1) : safeName;
+  var dotIndex = leaf.lastIndexOf('.');
+  var base = dotIndex > 0 ? leaf.slice(0, dotIndex) : leaf;
+  var ext = dotIndex > 0 ? leaf.slice(dotIndex) : '';
+  var suffix = 2;
+  var candidate = dir + base + '-' + suffix + ext;
+
+  while (taken[candidate]) {
+    suffix += 1;
+    candidate = dir + base + '-' + suffix + ext;
+  }
+
+  taken[candidate] = true;
+  return candidate;
+}
+
 function getAppBaseUrl() {
   return window.location.origin + window.location.pathname;
 }
@@ -65,6 +136,58 @@ function buildDownloadHash(peerId, fileId) {
 
 function buildDownloadQrValue(peerId, fileId) {
   return 'd:' + (peerId || '') + (fileId ? ':' + fileId : '');
+}
+
+async function copyTextToClipboard(value) {
+  var text = String(value || '');
+
+  if (!text) {
+    throw new Error('Nothing to copy.');
+  }
+
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function' && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  var textarea = document.createElement('textarea');
+  var selection = document.getSelection ? document.getSelection() : null;
+  var originalRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  var activeElement = document.activeElement;
+
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.top = '-1000px';
+  textarea.style.left = '-1000px';
+  textarea.style.opacity = '0';
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  var copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textarea);
+
+    if (selection) {
+      selection.removeAllRanges();
+      if (originalRange) {
+        selection.addRange(originalRange);
+      }
+    }
+
+    if (activeElement && typeof activeElement.focus === 'function') {
+      activeElement.focus();
+    }
+  }
+
+  if (!copied) {
+    throw new Error('Clipboard copy failed.');
+  }
 }
 
 function buildDownloadLink(peerId, fileId) {
