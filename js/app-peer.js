@@ -22,6 +22,7 @@ DropApp.createPeerController = function createPeerController(options) {
   var cleanupConnectionTransfers = options.cleanupConnectionTransfers;
   var handleData = options.handleData;
   var startOutgoingTransfer = options.startOutgoingTransfer;
+  var onDirectConnectionOpen = options.onDirectConnectionOpen;
 
   function setupConn(conn, mode) {
     connRef.current = conn;
@@ -31,7 +32,10 @@ DropApp.createPeerController = function createPeerController(options) {
         setQrModal(null);
       }
       setStatus('connected');
-      showToast('Connected! You can now send files.', 'success');
+      if (typeof onDirectConnectionOpen === 'function') {
+        onDirectConnectionOpen(conn, mode);
+      }
+      showToast('Connection established.', 'success');
     });
     conn.on('data', function(data) { handleData(conn, data, mode); });
     conn.on('close', function() {

@@ -134,6 +134,54 @@ function QrModal({ title, value, qrValue, subtitle, onClose, onCopy }) {
   );
 }
 
+function QrCard({ title, subtitle, value, qrValue, onCopy, copied }) {
+  const canvasRef = useRef(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    var canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (!window.QRious || typeof window.QRious !== 'function') {
+      setError('QR generation is unavailable right now.');
+      return;
+    }
+
+    try {
+      new window.QRious({
+        element: canvas,
+        value: qrValue || value,
+        size: 220,
+        level: 'L',
+        foreground: '#0a0a0c',
+        background: '#f8fafc'
+      });
+      setError('');
+    } catch (err) {
+      console.error('Failed to render QR code:', err);
+      setError('Failed to render the QR code.');
+    }
+  }, [qrValue, value]);
+
+  return h('div', { className: 'surface-card qr-card', style: { animation:'fadeUp 0.35s ease' } },
+    h('div', { className: 'section-label' }, 'Send link'),
+    title && h('h3', { style: { fontFamily:"'Outfit', sans-serif", fontWeight:600, fontSize:24, lineHeight:1.1, marginBottom:8 } }, title),
+    subtitle && h('p', { className: 'card-copy', style: { marginBottom:18 } }, subtitle),
+    h('div', { className: 'qr-preview' },
+      error
+        ? h('p', { style: { color:'#0f172a', fontFamily:"'DM Mono', monospace", fontSize:12, textAlign:'center', maxWidth:220, lineHeight:1.6 } }, error)
+        : h('canvas', { ref: canvasRef, width:220, height:220, style: { width:'100%', maxWidth:220, height:'auto', display:'block' } })
+    ),
+    h('div', { className: 'inline-actions', style: { marginTop:12 } },
+      h('button', {
+        onClick: onCopy,
+        disabled: !value,
+        className: copied ? 'ghost-button is-active' : 'primary-button'
+      }, copied ? 'Copied' : 'Copy link')
+    )
+  );
+}
+
 /* ─── QR Scanner Modal ─── */
 function ScannerModal({ onClose, onScan }) {
   const videoRef = useRef(null);
@@ -288,10 +336,9 @@ function ScannerModal({ onClose, onScan }) {
         borderRadius:24, width:'100%', maxWidth:480, padding:'24px',
         animation:'scaleIn 0.25s ease', boxShadow:'0 20px 80px rgba(0,0,0,0.45)'
       }
-    },
+      },
       h('div', { style: { display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:16, marginBottom:18 } },
         h('div', null,
-          h('div', { style: { fontFamily:"'DM Mono', monospace", fontSize:11, letterSpacing:1, textTransform:'uppercase', color:'var(--text-dim)', marginBottom:8 } }, 'Scanner'),
           h('h3', { style: { fontFamily:"'Outfit', sans-serif", fontWeight:600, fontSize:22, lineHeight:1.1 } }, 'Scan QR code'),
           h('p', { style: { marginTop:8, color:'var(--text-dim)', fontSize:13, lineHeight:1.5 } }, 'Scan a direct-connect or download QR code to open it here.')
         ),
@@ -320,6 +367,7 @@ function ScannerModal({ onClose, onScan }) {
               h('video', {
                 key: 'video',
                 ref: videoRef,
+                'data-drop-scanner': 'true',
                 autoPlay: true,
                 muted: true,
                 playsInline: true,
@@ -358,52 +406,244 @@ function ScannerModal({ onClose, onScan }) {
   );
 }
 
+function ScannerPanel({ title, subtitle, onScan, enabled }) {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const frameRef = useRef(null);
+  const streamRef = useRef(null);
+  const onScanRef = useRef(onScan);
+  const [statusText, setStatusText] = useState('Requesting camera access...');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    onScanRef.current = onScan;
+  }, [onScan]);
+
+  useEffect(() => {
+    var cancelled = false;
+
+    function stopStream(stream) {
+      if (!stream) return;
+      var tracks = stream.getTracks ? stream.getTracks() : [];
+      for (var i = 0; i < tracks.length; i++) {
+        tracks[i].stop();
+      }
+    }
+
+    if (enabled === false) {
+      setStatusText('');
+      setError('');
+      return function() {
+        if (frameRef.current) cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+        stopStream(streamRef.current);
+        streamRef.current = null;
+      };
+    }
+
+    async function start() {
+      if (!window.isSecureContext) {
+        setError('Camera scanning requires HTTPS or localhost. This page is not running in a secure context.');
+        setStatusText('');
+        return;
+      }
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError('Camera APIs are unavailable in this browser context.');
+        setStatusText('');
+        return;
+      }
+
+      if (!window.jsQR) {
+        setError('QR scanning failed to load.');
+        setStatusText('');
+        return;
+      }
+
+      try {
+        var stream;
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false
+          });
+        } catch (primaryErr) {
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+
+        if (cancelled) {
+          stopStream(stream);
+          return;
+        }
+
+        streamRef.current = stream;
+
+        var video = videoRef.current;
+        if (!video) {
+          stopStream(stream);
+          return;
+        }
+
+        video.srcObject = stream;
+        video.setAttribute('playsinline', 'true');
+
+        try {
+          await video.play();
+        } catch (err) {}
+
+        setStatusText('Point the camera at the sender QR code.');
+
+        function scanFrame() {
+          var liveVideo = videoRef.current;
+          var canvas = canvasRef.current;
+          if (!liveVideo || !canvas) return;
+
+          if (liveVideo.readyState >= 2 && liveVideo.videoWidth > 0 && liveVideo.videoHeight > 0) {
+            canvas.width = liveVideo.videoWidth;
+            canvas.height = liveVideo.videoHeight;
+
+            var ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(liveVideo, 0, 0, canvas.width, canvas.height);
+
+            var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            var code = window.jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'dontInvert'
+            });
+
+            if (code && code.data) {
+              if (frameRef.current) cancelAnimationFrame(frameRef.current);
+              frameRef.current = null;
+              stopStream(streamRef.current);
+              streamRef.current = null;
+              if (videoRef.current) {
+                videoRef.current.srcObject = null;
+              }
+              setStatusText('QR code detected. Connecting...');
+              onScanRef.current(code.data);
+              return;
+            }
+          }
+
+          frameRef.current = requestAnimationFrame(scanFrame);
+        }
+
+        frameRef.current = requestAnimationFrame(scanFrame);
+      } catch (err) {
+        console.error('Failed to start camera preview:', err);
+        if (err && err.name === 'NotAllowedError') {
+          setError('Camera permission was denied.');
+        } else if (err && err.name === 'NotFoundError') {
+          setError('No camera was found on this device.');
+        } else {
+          setError('Unable to open the camera preview.');
+        }
+        setStatusText('');
+      }
+    }
+
+    start();
+
+    return function() {
+      cancelled = true;
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+      stopStream(streamRef.current);
+      streamRef.current = null;
+    };
+  }, [enabled]);
+
+  return h('div', { className: 'surface-card', style: { animation:'fadeUp 0.35s ease' } },
+    h('h3', { style: { fontFamily:"'Outfit', sans-serif", fontWeight:600, fontSize:24, lineHeight:1.1, marginBottom:8 } }, title),
+    subtitle && h('p', { className: 'card-copy', style: { marginBottom:18 } }, subtitle),
+    h('div', { className: 'scanner-preview' },
+      error
+        ? h('div', { style: { padding:'24px', textAlign:'center', maxWidth:260 } },
+            h('div', { style: { width:56, height:56, borderRadius:'50%', margin:'0 auto 16px', background:'rgba(248,113,113,0.12)', border:'1px solid rgba(248,113,113,0.35)', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--danger)' } }, h(CameraIcon)),
+            h('p', { style: { color:'var(--text)', fontSize:14, lineHeight:1.6 } }, error)
+          )
+        : [
+            h('video', {
+              key: 'video',
+              ref: videoRef,
+              'data-drop-scanner': 'true',
+              autoPlay: true,
+              muted: true,
+              playsInline: true,
+              style: { width:'100%', height:'100%', objectFit:'cover', minHeight:320, display:'block' }
+            }),
+            h('div', {
+              key: 'frame',
+              className: 'scanner-frame'
+            })
+          ]
+    ),
+    h('canvas', { ref: canvasRef, style: { display:'none' } }),
+    h('div', {
+      style: {
+        marginTop:16, padding:'12px 14px', borderRadius:12,
+        border:'1px solid var(--border)', background:'var(--surface-2)',
+        color:error ? 'var(--danger)' : 'var(--text-dim)',
+        fontFamily:"'DM Mono', monospace", fontSize:11, lineHeight:1.6
+      }
+    }, error || statusText)
+  );
+}
+
 /* ─── File Transfer Item ─── */
-function TransferItem({ file, direction }) {
+function TransferItem({ file, direction, onDownload }) {
   const isReceived = direction === 'received';
+  const isDownloadable = isReceived && (file.url || file.fileHandle);
+  const isHighlighted = isDownloadable && !file.isDownloaded;
   const download = async () => {
+    if (!isDownloadable) return;
+
     try {
       await downloadTransferFile(file);
+      if (typeof onDownload === 'function') {
+        onDownload(file);
+      }
     } catch (err) {
       console.error('Download failed:', err);
     }
   };
   return h('div', {
-    style: {
-      display:'flex', alignItems:'center', gap:14,
-      padding:'14px 18px', background:'var(--surface-2)',
-      border:'1px solid var(--border)', borderRadius:14,
-      animation:'fadeUp 0.3s ease', marginBottom:10
-    }
+    className:
+      'transfer-item' +
+      (isDownloadable ? ' is-downloadable' : '') +
+      (isHighlighted ? ' is-highlighted' : ''),
+    role: isDownloadable ? 'button' : null,
+    tabIndex: isDownloadable ? 0 : null,
+    onClick: isDownloadable ? function() { download(); } : null,
+    onKeyDown: isDownloadable
+      ? function(e) {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            download();
+          }
+        }
+      : null,
+    'aria-label': isDownloadable ? 'Download ' + file.name : null
   },
-    h('div', {
-      style: {
-        width:42, height:42, borderRadius:10,
-        background: isReceived ? 'var(--accent-glow)' : 'rgba(99,102,241,0.1)',
-        border: '1px solid ' + (isReceived ? 'var(--accent-dim)' : 'rgba(99,102,241,0.3)'),
-        display:'flex', alignItems:'center', justifyContent:'center',
-        color: isReceived ? 'var(--accent)' : '#818cf8', flexShrink:0
-      }
-    }, h(FileIcon)),
-    h('div', { style: { flex:1, minWidth:0 } },
-      h('div', {
-        style: { fontWeight:500, fontSize:14, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }
-      }, file.name),
-      h('div', {
-        style: { color:'var(--text-dim)', fontSize:12, fontFamily:"'DM Mono', monospace", marginTop:2 }
-      }, formatBytes(file.size) + ' · ' + (isReceived ? 'received' : 'sent'))
+    h('div', { className: 'transfer-item__icon' }, h(FileIcon)),
+    h('div', { className: 'transfer-item__body' },
+      h('div', { className: 'transfer-item__title' }, file.name),
+      h('div', { className: 'transfer-item__meta' }, formatBytes(file.size) + ' · ' + (isReceived ? 'received' : 'sent'))
     ),
-    isReceived && (file.url || file.fileHandle) && h('button', {
-      onClick: download,
-      style: {
-        width:36, height:36, borderRadius:8,
-        background:'var(--accent-glow)', border:'1px solid var(--accent-dim)',
-        color:'var(--accent)', cursor:'pointer',
-        display:'flex', alignItems:'center', justifyContent:'center',
-        transition:'all 0.2s', flexShrink:0
+    isDownloadable && h('button', {
+      type: 'button',
+      onClick: function(e) {
+        e.stopPropagation();
+        download();
       },
-      onMouseEnter: function(e) { e.currentTarget.style.background='var(--accent-dim)'; },
-      onMouseLeave: function(e) { e.currentTarget.style.background='var(--accent-glow)'; }
+      className: 'transfer-item__action',
+      'aria-label': 'Download ' + file.name
     }, h(DownloadIcon))
   );
 }

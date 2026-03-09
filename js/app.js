@@ -1,5 +1,11 @@
 /* Main App */
 function App() {
+  const [launchAction, setLaunchAction] = useState(function() {
+    return parseDropLink(window.location.hash);
+  });
+  const [mode, setMode] = useState(function() {
+    return launchAction ? 'receive' : 'home';
+  });
   const [myId, setMyId] = useState('');
   const [peerId, setPeerId] = useState('');
   const [status, setStatus] = useState('idle');
@@ -10,12 +16,18 @@ function App() {
   const [sendProgress, setSendProgress] = useState(null);
   const [receiveProgress, setReceiveProgress] = useState(null);
   const [zipProgress, setZipProgress] = useState(null);
+  const [preparedSend, setPreparedSend] = useState(null);
+  const [receiveUiHidden, setReceiveUiHidden] = useState(function() {
+    return !!launchAction;
+  });
 
   const [hostedFiles, setHostedFiles] = useState([]);
   const [linkDragging, setLinkDragging] = useState(false);
   const [linkCopied, setLinkCopied] = useState(null);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [isDownloadSession, setIsDownloadSession] = useState(false);
+  const [isDownloadSession, setIsDownloadSession] = useState(function() {
+    return !!(launchAction && launchAction.type === 'download');
+  });
   const [downloadProgress, setDownloadProgress] = useState(null);
   const [qrModal, setQrModal] = useState(null);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -32,9 +44,12 @@ function App() {
   const storageWarningShownRef = useRef(false);
   const zipTaskIdRef = useRef(0);
   const zipBusyRef = useRef(false);
+  const prepareSendTaskIdRef = useRef(0);
   const statusRef = useRef(status);
   const isDownloadingRef = useRef(isDownloading);
   const qrModalRef = useRef(qrModal);
+  const modeRef = useRef(mode);
+  const preparedSendRef = useRef(preparedSend);
 
   const CHUNK_SIZE = 64 * 1024;
   const TRANSFER_STORAGE_DIR = 'drop-transfers';
@@ -44,9 +59,30 @@ function App() {
   statusRef.current = status;
   isDownloadingRef.current = isDownloading;
   qrModalRef.current = qrModal;
+  modeRef.current = mode;
+  preparedSendRef.current = preparedSend;
 
   function showToast(message, type) {
     setToast({ message: message, type: type || 'info', key: Date.now() });
+  }
+
+  function stopActiveScannerStreams() {
+    var scannerVideos = document.querySelectorAll('video[data-drop-scanner="true"]');
+
+    Array.prototype.forEach.call(scannerVideos, function(video) {
+      var stream = video && video.srcObject;
+      var tracks = stream && typeof stream.getTracks === 'function'
+        ? stream.getTracks()
+        : [];
+
+      for (var i = 0; i < tracks.length; i++) {
+        tracks[i].stop();
+      }
+
+      if (video) {
+        video.srcObject = null;
+      }
+    });
   }
 
   var selectionController = DropApp.createSelectionController({
@@ -95,7 +131,21 @@ function App() {
     currentReceiveFileIdRef: currentReceiveFileIdRef,
     cleanupConnectionTransfers: transferController.cleanupConnectionTransfers,
     handleData: transferController.handleData,
-    startOutgoingTransfer: transferController.startOutgoingTransfer
+    startOutgoingTransfer: transferController.startOutgoingTransfer,
+    onDirectConnectionOpen: function(conn, connectionMode) {
+      var pending = preparedSendRef.current;
+
+      if (connectionMode !== 'direct' || modeRef.current !== 'send') {
+        return;
+      }
+
+      if (!pending || !pending.file) {
+        showToast('Connected, but no file is ready to send yet.', 'info');
+        return;
+      }
+
+      transferController.startOutgoingTransfer(conn, pending.file, { trackProgress: true });
+    }
   });
 
   useEffect(function() {
@@ -124,6 +174,48 @@ function App() {
     return peerController.initializePeer();
   }, []);
 
+  useEffect(function() {
+    function syncLaunchAction() {
+      var nextAction = parseDropLink(window.location.hash);
+
+      setLaunchAction(nextAction);
+      if (nextAction) {
+        stopActiveScannerStreams();
+        setScannerOpen(false);
+        setMode('receive');
+        setReceiveUiHidden(true);
+        setIsDownloadSession(nextAction.type === 'download');
+
+        if (nextAction.type === 'connect') {
+          peerController.startDirectConnection(nextAction.id);
+        } else if (nextAction.type === 'download') {
+          peerController.startHostedDownload(nextAction.id, { downloadSession: false, fileId: nextAction.fileId });
+        }
+
+        history.replaceState(null, '', window.location.pathname + window.location.search);
+      } else {
+        setIsDownloadSession(false);
+      }
+    }
+
+    window.addEventListener('hashchange', syncLaunchAction);
+    return function() {
+      window.removeEventListener('hashchange', syncLaunchAction);
+    };
+  }, []);
+
+  useEffect(function() {
+    if (mode === 'receive' && (isDownloading || !!receiveProgress)) {
+      setReceiveUiHidden(true);
+    }
+  }, [mode, isDownloading, receiveProgress]);
+
+  useEffect(function() {
+    if (mode === 'receive' && status === 'idle' && !isDownloading && !receiveProgress) {
+      setReceiveUiHidden(false);
+    }
+  }, [mode, status, isDownloading, receiveProgress]);
+
   function requestConnection() {
     peerController.startDirectConnection(peerId);
   }
@@ -137,25 +229,58 @@ function App() {
     transferController.startOutgoingTransfer(conn, file, { trackProgress: true });
   }
 
-  async function sendSelection(selection) {
+  function resetPreparedSend() {
+    prepareSendTaskIdRef.current += 1;
+    setDragging(false);
+    setPreparedSend(null);
+
+    if (zipBusyRef.current) {
+      zipTaskIdRef.current += 1;
+      zipBusyRef.current = false;
+      setZipProgress(null);
+    }
+  }
+
+  async function prepareSendSelection(selection) {
+    if (currentSendFileIdRef.current) {
+      showToast('Wait for the current send to finish before preparing another file.', 'info');
+      return;
+    }
+
+    var requestId = ++prepareSendTaskIdRef.current;
     var normalized = selection && selection.entries ? selection : selectionController.buildSelectionFromFileList(selection);
     var selectionFile = await selectionController.buildSelectionFile(normalized, 'send');
+    if (prepareSendTaskIdRef.current !== requestId) return;
     if (!selectionFile || !selectionFile.file) return;
-    sendFile(selectionFile.file);
+
+    setPreparedSend({
+      file: selectionFile.file,
+      sourceCount: selectionFile.sourceCount,
+      folderCount: selectionFile.folderCount,
+      createdAt: Date.now()
+    });
+    setMode('send');
+
+    if (connRef.current && connRef.current.open) {
+      sendFile(selectionFile.file);
+      return;
+    }
+
+    showToast('Send link ready. Open it on the receiving device.', 'success');
   }
 
-  async function sendSelectedFiles(fileList) {
-    await sendSelection(selectionController.buildSelectionFromFileList(fileList));
+  async function prepareSelectedFiles(fileList) {
+    await prepareSendSelection(selectionController.buildSelectionFromFileList(fileList));
   }
 
-  async function sendSelectedFolder(fileList) {
-    await sendSelection(selectionController.buildSelectionFromFileList(fileList));
+  async function prepareSelectedFolder(fileList) {
+    await prepareSendSelection(selectionController.buildSelectionFromFileList(fileList));
   }
 
-  async function sendDroppedSelection(dataTransfer) {
+  async function prepareDroppedSelection(dataTransfer) {
     var selection = await selectionController.buildSelectionFromDrop(dataTransfer);
     if (!selection) return;
-    await sendSelection(selection);
+    await prepareSendSelection(selection);
   }
 
   function openPicker(inputId, e) {
@@ -187,16 +312,16 @@ function App() {
     e.preventDefault();
     e.stopPropagation();
     setDragging(false);
-    await sendDroppedSelection(e.dataTransfer);
+    await prepareDroppedSelection(e.dataTransfer);
   }
 
   async function onFileSelect(e) {
-    await sendSelectedFiles(e.target.files);
+    await prepareSelectedFiles(e.target.files);
     e.target.value = '';
   }
 
   async function onFolderSelect(e) {
-    await sendSelectedFolder(e.target.files);
+    await prepareSelectedFolder(e.target.files);
     e.target.value = '';
   }
 
@@ -206,11 +331,41 @@ function App() {
       await copyTextToClipboard(link);
       setCopied(true);
       setTimeout(function() { setCopied(false); }, 2000);
-      showToast('Direct connect link copied.', 'success');
+      showToast('Send link copied.', 'success');
     } catch (err) {
       console.error('Failed to copy direct connect link:', err);
-      showToast('Could not copy the direct connect link.', 'error');
+      showToast('Could not copy the send link.', 'error');
     }
+  }
+
+  function clearPreparedSend() {
+    resetPreparedSend();
+  }
+
+  function openSendMode() {
+    stopActiveScannerStreams();
+    setReceiveUiHidden(false);
+    setMode('send');
+  }
+
+  function openReceiveMode() {
+    setLaunchAction(null);
+    setReceiveUiHidden(false);
+    setMode('receive');
+  }
+
+  function goHome() {
+    setLaunchAction(null);
+    stopActiveScannerStreams();
+    setReceiveUiHidden(false);
+    if (modeRef.current === 'send' && !currentSendFileIdRef.current) {
+      resetPreparedSend();
+    }
+    setMode('home');
+  }
+
+  function handleReceiveScan(value) {
+    peerController.handleScannerResult(value);
   }
 
   function disconnect() {
@@ -242,6 +397,7 @@ function App() {
     }
 
     transferController.cancelIncomingTransfer(fileId, 'Receive cancelled.');
+    setReceiveUiHidden(false);
   }
 
   function createHostedFileId() {
@@ -339,9 +495,30 @@ function App() {
     e.target.value = '';
   }
 
+  function markTransferDownloaded(transfer) {
+    if (!transfer) return;
+
+    setTransfers(function(prev) {
+      return prev.map(function(item) {
+        var sameTransfer =
+          (transfer.transferId && item.transferId === transfer.transferId) ||
+          item === transfer ||
+          (
+            item.name === transfer.name &&
+            item.size === transfer.size &&
+            item.direction === transfer.direction
+          );
+
+        return sameTransfer
+          ? Object.assign({}, item, { isDownloaded: true })
+          : item;
+      });
+    });
+  }
+
   return h(DropApp.AppView, {
+    mode: mode,
     myId: myId,
-    peerId: peerId,
     status: status,
     toast: toast,
     transfers: transfers,
@@ -350,25 +527,23 @@ function App() {
     sendProgress: sendProgress,
     receiveProgress: receiveProgress,
     zipProgress: zipProgress,
-    hostedFiles: hostedFiles,
-    linkDragging: linkDragging,
-    linkCopied: linkCopied,
     isDownloading: isDownloading,
     isDownloadSession: isDownloadSession,
+    receiveLaunchType: launchAction ? launchAction.type : '',
     downloadProgress: downloadProgress,
-    qrModal: qrModal,
-    scannerOpen: scannerOpen,
-    directConnectLink: myId ? buildConnectLink(myId) : '',
-    scannerDisabled: !myId || status === 'connecting' || isDownloading,
+    preparedSend: preparedSend,
+    receiveUiHidden: receiveUiHidden,
+    sendLink: myId ? buildConnectLink(myId) : '',
     isPackagingZip: !!zipProgress,
     connectedPeerId: peerId || (connRef.current && connRef.current.peer) || '-',
-    setPeerId: setPeerId,
-    requestConnection: requestConnection,
-    showQrCode: peerController.showQrCode,
-    openScanner: function() { setScannerOpen(true); },
-    closeScanner: function() { setScannerOpen(false); },
-    handleScannerResult: peerController.handleScannerResult,
+    openSendMode: openSendMode,
+    openReceiveMode: openReceiveMode,
+    goHome: goHome,
+    handleReceiveScan: handleReceiveScan,
+    scannerOpen: scannerOpen,
+    setScannerOpen: setScannerOpen,
     copyId: copyId,
+    clearPreparedSend: clearPreparedSend,
     openPicker: openPicker,
     onDragOver: onDragOver,
     onDragLeave: onDragLeave,
@@ -378,15 +553,7 @@ function App() {
     disconnect: disconnect,
     cancelSend: cancelSend,
     cancelReceive: cancelReceive,
-    onLinkDragOver: onLinkDragOver,
-    onLinkDragLeave: onLinkDragLeave,
-    onLinkDrop: onLinkDrop,
-    onLinkFileSelect: onLinkFileSelect,
-    onLinkFolderSelect: onLinkFolderSelect,
-    copyLink: copyLink,
-    removeHostedFile: removeHostedFile,
-    closeQrModal: function() { setQrModal(null); },
-    copyQrValue: peerController.copyQrValue,
+    markTransferDownloaded: markTransferDownloaded,
     clearToast: function() { setToast(null); }
   });
 }

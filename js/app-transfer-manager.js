@@ -22,6 +22,19 @@ DropApp.createTransferManager = function createTransferManager(options) {
     return Math.min(100, Math.round((bytes / total) * 100));
   }
 
+  function addTransferRecord(record) {
+    var nextRecord = Object.assign(
+      {
+        transferId: 'transfer-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+      },
+      record
+    );
+
+    setTransfers(function(prev) {
+      return [nextRecord].concat(prev);
+    });
+  }
+
   function updateReceiveUi(fileBuild) {
     var percent = percentFromBytes(fileBuild.receivedBytes, fileBuild.size);
     var eta = formatEta(fileBuild.startTime, percent);
@@ -225,30 +238,33 @@ DropApp.createTransferManager = function createTransferManager(options) {
         }
 
         transferRecord = {
+          transferId: fileBuild.id + '-received',
           name: fileBuild.name,
           size: fileBuild.size,
           fileHandle: fileBuild.fileHandle,
-          direction: 'received'
+          direction: 'received',
+          isDownloaded: false
         };
       } else {
         var blob = new Blob(fileBuild.chunks, { type: fileBuild.mimeType });
         transferRecord = {
+          transferId: fileBuild.id + '-received',
           name: fileBuild.name,
           size: fileBuild.size,
           url: URL.createObjectURL(blob),
-          direction: 'received'
+          direction: 'received',
+          isDownloaded: false
         };
       }
 
-      setTransfers(function(prev) { return prev.concat([transferRecord]); });
+      addTransferRecord(transferRecord);
       clearReceiveUi(fileBuild);
 
       if (fileBuild.mode === 'download') {
-        await downloadTransferFile(transferRecord);
         history.replaceState(null, '', window.location.pathname + window.location.search);
-        showToast('Downloaded: ' + fileBuild.name, 'success');
+        showToast('Received: ' + fileBuild.name + '. Click the transfer to download it.', 'success');
       } else {
-        showToast('Received: ' + fileBuild.name, 'success');
+        showToast('Received: ' + fileBuild.name + '. Click the transfer to download it.', 'success');
       }
     } catch (err) {
       console.error('Failed to finalize incoming transfer:', err);
@@ -366,8 +382,11 @@ DropApp.createTransferManager = function createTransferManager(options) {
     if (transfer.trackProgress) {
       setSendProgress(null);
       currentSendFileIdRef.current = null;
-      setTransfers(function(prev) {
-        return prev.concat([{ name: transfer.name, size: transfer.size, direction: 'sent' }]);
+      addTransferRecord({
+        transferId: transfer.id + '-sent',
+        name: transfer.name,
+        size: transfer.size,
+        direction: 'sent'
       });
       showToast('Sent: ' + transfer.name, 'success');
     }

@@ -234,28 +234,99 @@ function parseDropLink(value) {
   return null;
 }
 
-function triggerDownloadUrl(url, name) {
+function renderDownloadPromptWindow(win) {
+  if (!win || win.closed) return;
+
+  try {
+    win.document.open();
+    win.document.write(
+      '<!DOCTYPE html><html><head><title>Drop download helper</title></head><body style="margin:0;font-family:Outfit,sans-serif;background:#0a0a0c;color:#e8e8ed;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center;"><div><div style="font-family:DM Mono,monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#6ee7b7;margin-bottom:12px;">drop</div><h1 style="margin:0 0 12px;font-size:24px;font-weight:600;">Waiting for file</h1><p style="margin:0;color:#8888a0;line-height:1.6;max-width:320px;">Keep this small window open. It will be used to trigger the browser download prompt when a file finishes receiving.</p></div></body></html>'
+    );
+    win.document.close();
+  } catch (err) {}
+}
+
+function primeDownloadPromptWindow(existingWindow) {
+  var popup = existingWindow && !existingWindow.closed
+    ? existingWindow
+    : window.open('', 'drop-download-helper', 'popup,width=420,height=360');
+
+  if (!popup) return null;
+
+  renderDownloadPromptWindow(popup);
+  return popup;
+}
+
+window.primeDownloadPromptWindow = primeDownloadPromptWindow;
+
+function triggerDownloadWithHelperWindow(url, name, helperWindowRef) {
+  var helper = helperWindowRef && helperWindowRef.current;
+  if (!helper || helper.closed) return false;
+
+  try {
+    helper.focus();
+
+    var doc = helper.document;
+    doc.open();
+    doc.write(
+      '<!DOCTYPE html><html><head><title>Starting download</title></head><body style="margin:0;font-family:Outfit,sans-serif;background:#0a0a0c;color:#e8e8ed;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;text-align:center;"><div><h1 style="margin:0 0 12px;font-size:22px;font-weight:600;">Starting download</h1><p style="margin:0;color:#8888a0;line-height:1.6;">If your browser asks, confirm the download.</p></div></body></html>'
+    );
+    doc.close();
+
+    var link = doc.createElement('a');
+    link.href = url;
+    link.download = name || '';
+    link.style.display = 'none';
+    doc.body.appendChild(link);
+    link.click();
+
+    setTimeout(function() {
+      if (helperWindowRef && helperWindowRef.current === helper && !helper.closed) {
+        renderDownloadPromptWindow(helper);
+      }
+    }, 1200);
+
+    return true;
+  } catch (err) {
+    console.error('Failed to trigger download in helper window:', err);
+    return false;
+  }
+}
+
+function triggerDownloadUrl(url, name, optionsArg) {
+  var options = optionsArg || {};
+
+  if (triggerDownloadWithHelperWindow(url, name, options.helperWindowRef)) {
+    return;
+  }
+
   var a = document.createElement('a');
   a.href = url;
   a.download = name;
-  a.click();
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  try {
+    a.click();
+  } finally {
+    document.body.removeChild(a);
+  }
 }
 
-async function triggerDownloadFromHandle(fileHandle, name) {
+async function triggerDownloadFromHandle(fileHandle, name, optionsArg) {
   var file = await fileHandle.getFile();
   var url = URL.createObjectURL(file);
   try {
-    triggerDownloadUrl(url, name);
+    triggerDownloadUrl(url, name, optionsArg);
   } finally {
-    setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 4000);
   }
 }
 
-async function downloadTransferFile(file) {
+async function downloadTransferFile(file, optionsArg) {
   if (file.fileHandle) {
-    return triggerDownloadFromHandle(file.fileHandle, file.name);
+    return triggerDownloadFromHandle(file.fileHandle, file.name, optionsArg);
   }
   if (file.url) {
-    triggerDownloadUrl(file.url, file.name);
+    triggerDownloadUrl(file.url, file.name, optionsArg);
   }
 }

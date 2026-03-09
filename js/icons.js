@@ -18,8 +18,18 @@ const FileIcon = () => (
     h('polyline', { points:'14 2 14 8 20 8' })
   )
 );
-const DownloadIcon = () => (
-  h('svg', { width:16, height:16, viewBox:'0 0 24 24', fill:'none', stroke:'currentColor', strokeWidth:2, strokeLinecap:'round', strokeLinejoin:'round' },
+const DownloadIcon = (props) => (
+  h('svg', {
+    width:(props && props.width) || 16,
+    height:(props && props.height) || 16,
+    viewBox:'0 0 24 24',
+    fill:'none',
+    stroke:'currentColor',
+    strokeWidth:(props && props.strokeWidth) || 2,
+    strokeLinecap:'round',
+    strokeLinejoin:'round',
+    style: props && props.style
+  },
     h('path', { d:'M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4' }),
     h('polyline', { points:'7 10 12 15 17 10' }),
     h('line', { x1:12, y1:15, x2:12, y2:3 })
