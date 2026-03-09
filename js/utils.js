@@ -119,7 +119,7 @@ function buildConnectHash(peerId) {
 }
 
 function buildConnectQrValue(peerId) {
-  return 'c:' + (peerId || '');
+  return buildConnectLink(peerId);
 }
 
 function buildConnectLink(peerId) {
@@ -135,7 +135,7 @@ function buildDownloadHash(peerId, fileId) {
 }
 
 function buildDownloadQrValue(peerId, fileId) {
-  return 'd:' + (peerId || '') + (fileId ? ':' + fileId : '');
+  return buildDownloadLink(peerId, fileId);
 }
 
 async function copyTextToClipboard(value) {
@@ -203,30 +203,6 @@ function parseDropLink(value) {
   var candidate = trimmed;
   if (candidate.indexOf('#') === 0) {
     candidate = getAppBaseUrl() + candidate;
-  }
-
-  if (trimmed.indexOf('c:') === 0) {
-    var compactConnectId = trimmed.slice(2).trim();
-    if (isGeneratedPeerId(compactConnectId)) {
-      return { type: 'connect', id: compactConnectId, url: buildConnectLink(compactConnectId) };
-    }
-    return null;
-  }
-
-  if (trimmed.indexOf('d:') === 0) {
-    var compactParts = trimmed.split(':');
-    var compactDownloadId = compactParts[1] || '';
-    var compactFileId = compactParts[2] || '';
-
-    if (isGeneratedPeerId(compactDownloadId)) {
-      return {
-        type: 'download',
-        id: compactDownloadId,
-        fileId: compactFileId,
-        url: buildDownloadLink(compactDownloadId, compactFileId)
-      };
-    }
-    return null;
   }
 
   try {
