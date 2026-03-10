@@ -1,10 +1,11 @@
 /* Main App */
 function App() {
   const [launchAction, setLaunchAction] = useState(function() {
-    return parseDropLink(window.location.hash);
+    var nextAction = parseDropLink(window.location.hash);
+    return nextAction && nextAction.type === 'download' ? nextAction : null;
   });
   const [mode, setMode] = useState(function() {
-    return launchAction ? 'receive' : 'home';
+    return launchAction && launchAction.type === 'download' ? 'receive' : 'home';
   });
   const [myId, setMyId] = useState('');
   const [peerId, setPeerId] = useState('');
@@ -18,7 +19,7 @@ function App() {
   const [zipProgress, setZipProgress] = useState(null);
   const [preparedSend, setPreparedSend] = useState(null);
   const [receiveUiHidden, setReceiveUiHidden] = useState(function() {
-    return !!launchAction;
+    return !!(launchAction && launchAction.type === 'download');
   });
 
   const [hostedFiles, setHostedFiles] = useState([]);
@@ -178,17 +179,20 @@ function App() {
     function syncLaunchAction() {
       var nextAction = parseDropLink(window.location.hash);
 
-      setLaunchAction(nextAction);
+      setLaunchAction(nextAction && nextAction.type === 'download' ? nextAction : null);
       if (nextAction) {
         stopActiveScannerStreams();
         setScannerOpen(false);
-        setMode('receive');
-        setReceiveUiHidden(true);
-        setIsDownloadSession(nextAction.type === 'download');
 
         if (nextAction.type === 'connect') {
+          setMode('home');
+          setReceiveUiHidden(false);
+          setIsDownloadSession(false);
           peerController.startDirectConnection(nextAction.id);
         } else if (nextAction.type === 'download') {
+          setMode('receive');
+          setReceiveUiHidden(true);
+          setIsDownloadSession(true);
           peerController.startHostedDownload(nextAction.id, { downloadSession: false, fileId: nextAction.fileId });
         }
 
@@ -340,6 +344,31 @@ function App() {
 
   function clearPreparedSend() {
     resetPreparedSend();
+  }
+
+  function openHomeConnectionQr() {
+    var link = buildConnectLink(myId);
+
+    if (!myId || !link) {
+      showToast('Connection link is still getting ready.', 'info');
+      return;
+    }
+
+    peerController.showQrCode(
+      'Connect another device',
+      link,
+      'Open this link on the other device. It will stay on the home screen and connect automatically.',
+      buildConnectQrValue(myId),
+      'direct-connect'
+    );
+  }
+
+  function closeQrModal() {
+    setQrModal(null);
+  }
+
+  function copyQrValue() {
+    peerController.copyQrValue();
   }
 
   function openSendMode() {
@@ -536,8 +565,12 @@ function App() {
     sendLink: myId ? buildConnectLink(myId) : '',
     isPackagingZip: !!zipProgress,
     connectedPeerId: peerId || (connRef.current && connRef.current.peer) || '-',
+    qrModal: qrModal,
     openSendMode: openSendMode,
     openReceiveMode: openReceiveMode,
+    openHomeConnectionQr: openHomeConnectionQr,
+    closeQrModal: closeQrModal,
+    copyQrValue: copyQrValue,
     goHome: goHome,
     handleReceiveScan: handleReceiveScan,
     scannerOpen: scannerOpen,

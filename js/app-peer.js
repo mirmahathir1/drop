@@ -203,19 +203,19 @@ DropApp.createPeerController = function createPeerController(options) {
     setScannerOpen(false);
 
     if (!parsed) {
-      showToast('That QR code is not a valid Drop link.', 'error');
+      showToast('That link or ID is not a valid Drop connection.', 'error');
       return;
     }
 
     if (parsed.type === 'download') {
       if (startHostedDownload(parsed.id, { downloadSession: false, fileId: parsed.fileId })) {
-        showToast('Download link scanned. Connecting...', 'info');
+        showToast('Download link received. Connecting...', 'info');
       }
       return;
     }
 
     if (startDirectConnection(parsed.id)) {
-      showToast('Peer link scanned. Connecting...', 'info');
+      showToast('Peer ID received. Connecting...', 'info');
     }
   }
 

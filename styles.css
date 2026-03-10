@@ -121,7 +121,8 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 24px;
+  max-width: 620px;
+  margin: 0 auto 24px;
   animation: fadeUp 0.35s ease;
 }
 
@@ -339,6 +340,10 @@ button:disabled {
   flex-direction: column;
 }
 
+.qr-card__actions {
+  align-items: stretch;
+}
+
 .qr-preview {
   min-height: 268px;
   margin-bottom: 16px;
@@ -348,6 +353,36 @@ button:disabled {
   align-items: center;
   justify-content: center;
   padding: 18px;
+}
+
+.qr-id-chip {
+  flex: 1 1 220px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+}
+
+.qr-id-chip__label {
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.qr-id-chip__value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 1.4;
 }
 
 .mono-textarea {
@@ -378,6 +413,35 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.manual-connect-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.manual-connect-input {
+  flex: 1 1 220px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+}
+
+.manual-connect-input::placeholder {
+  color: var(--text-dim);
+}
+
+.manual-connect-input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
 }
 
 .scanner-frame {
@@ -463,9 +527,9 @@ button:disabled {
 .transfer-item__title {
   font-weight: 500;
   font-size: 14px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 .transfer-item__meta {

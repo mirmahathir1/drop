@@ -29,9 +29,9 @@ function ProgressCard(props) {
             fontFamily:"'DM Mono', monospace",
             fontSize:13,
             color:'var(--text)',
-            overflow:'hidden',
-            textOverflow:'ellipsis',
-            whiteSpace:'nowrap'
+            whiteSpace:'normal',
+            overflowWrap:'anywhere',
+            lineHeight:1.5
           }
         }, props.title)
       ),
@@ -90,8 +90,12 @@ DropApp.AppView = function AppView(props) {
   var sendLink = props.sendLink;
   var isPackagingZip = props.isPackagingZip;
   var connectedPeerId = props.connectedPeerId;
+  var qrModal = props.qrModal;
   var openSendMode = props.openSendMode;
   var openReceiveMode = props.openReceiveMode;
+  var openHomeConnectionQr = props.openHomeConnectionQr;
+  var closeQrModal = props.closeQrModal;
+  var copyQrValue = props.copyQrValue;
   var goHome = props.goHome;
   var handleReceiveScan = props.handleReceiveScan;
   var scannerOpen = props.scannerOpen;
@@ -139,19 +143,45 @@ DropApp.AppView = function AppView(props) {
           icon: h(DownloadIcon, { width:42, height:42, strokeWidth:1.5 })
         })
       ),
-      status === 'connected' && h('div', { className: 'send-ready-shell' },
-        h('div', { className: 'surface-card', style: { animation:'fadeUp 0.35s ease' } },
-          h('div', { className: 'section-label' }, 'Connected'),
-          h('h2', { className: 'panel-title' }, 'You are connected to ' + connectedPeerId),
-          h('p', { className: 'card-copy' }, 'You have an active direct connection. Disconnect here to start new connection.'),
-          h('div', { className: 'inline-actions' },
-            h('button', {
+      h('div', {
+        style: {
+          display:'flex',
+          justifyContent:'center',
+          alignItems:'center',
+          margin:'4px auto 24px',
+          animation:'fadeUp 0.35s ease'
+        }
+      },
+        status === 'connected'
+          ? h('div', {
+              style: {
+                display:'flex',
+                flexDirection:'column',
+                alignItems:'center',
+                gap:12
+              }
+            },
+              h('div', {
+                style: {
+                  fontFamily:"'Outfit', sans-serif",
+                  fontSize:22,
+                  fontWeight:500,
+                  color:'var(--text)',
+                  textAlign:'center'
+                }
+              }, 'You are connected with ' + connectedPeerId),
+              h('button', {
+                className: 'ghost-button',
+                onClick: disconnect,
+                type: 'button'
+              }, 'Disconnect')
+            )
+          : h('button', {
               className: 'ghost-button',
-              onClick: disconnect,
+              onClick: openHomeConnectionQr,
+              disabled: !myId,
               type: 'button'
-            }, 'Disconnect')
-          )
-        )
+            }, 'Show QR code')
       )
     );
   }
@@ -176,6 +206,7 @@ DropApp.AppView = function AppView(props) {
       subtitle: subtitle,
       value: sendLink,
       qrValue: sendLink,
+      idValue: myId,
       onCopy: copyId,
       copied: copied
     });
@@ -189,7 +220,15 @@ DropApp.AppView = function AppView(props) {
           h('div', { className: 'prepared-summary' },
             h('div', { style: { minWidth:0, flex:1 } },
               h('div', { className: 'section-label', style: { marginBottom:6 } }, 'Ready package'),
-              h('div', { style: { fontWeight:500, fontSize:16, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' } }, preparedSend.file.name),
+              h('div', {
+                style: {
+                  fontWeight:500,
+                  fontSize:16,
+                  whiteSpace:'normal',
+                  overflowWrap:'anywhere',
+                  lineHeight:1.5
+                }
+              }, preparedSend.file.name),
               h('div', { className: 'card-copy', style: { marginTop:6 } },
                 formatBytes(preparedSend.file.size) +
                 ' · ' +
@@ -319,8 +358,8 @@ DropApp.AppView = function AppView(props) {
 
     return h('div', { className: 'send-ready-shell' },
       h(ScannerPanel, {
-        title: 'Scan the sender QR code',
-        subtitle: 'Open the camera on this device and point it at the QR code shown in send mode.',
+        title: 'Connect to the sender',
+        subtitle: 'Open the camera on this device and point it at the QR code shown in send mode, or enter the sender ID manually.',
         enabled: !hasReceiveLaunch && !isDownloadSession && status !== 'connecting',
         onScan: handleReceiveScan
       })
@@ -367,7 +406,7 @@ DropApp.AppView = function AppView(props) {
           ? 'Do you want to send or receive files?'
           : mode === 'send'
             ? 'Prepare the file here, then hand the link or QR code to the receiving device.'
-            : 'Scan the sender QR code to pull the file directly.'
+            : 'Scan the sender QR code or enter the sender ID to pull the file directly.'
       )
     ),
 
@@ -417,9 +456,9 @@ DropApp.AppView = function AppView(props) {
       h('p', { className: 'card-copy' }, downloadProgress || 'Preparing...')
     ),
 
-    mode !== 'home' && transfers.length > 0 && h('div', { style: { animation:'fadeUp 0.3s ease' } },
+    transfers.length > 0 && h('div', { style: { animation:'fadeUp 0.3s ease' } },
       h('div', { className: 'section-label', style: { paddingLeft:4, marginBottom:12 } }, 'Transfers'),
-      mode === 'receive' && hasReceivedTransfers && h('p', {
+      hasReceivedTransfers && (mode === 'receive' || mode === 'home') && h('p', {
         className: 'card-copy',
         style: { paddingLeft:4, marginBottom:12 }
       }, 'Click to download the transferred files'),
@@ -438,6 +477,15 @@ DropApp.AppView = function AppView(props) {
     renderReceiveWaitingCard(),
 
     toast && h(Toast, { key: toast.key, message: toast.message, type: toast.type, onDone: clearToast }),
+
+    qrModal && h(QrModal, {
+      title: qrModal.title,
+      value: qrModal.value,
+      qrValue: qrModal.qrValue,
+      subtitle: qrModal.subtitle,
+      onClose: closeQrModal,
+      onCopy: copyQrValue
+    }),
 
     scannerOpen && h(ScannerModal, {
       onClose: function() { setScannerOpen(false); },

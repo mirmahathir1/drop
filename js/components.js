@@ -134,7 +134,7 @@ function QrModal({ title, value, qrValue, subtitle, onClose, onCopy }) {
   );
 }
 
-function QrCard({ title, subtitle, value, qrValue, onCopy, copied }) {
+function QrCard({ title, subtitle, value, qrValue, idValue, onCopy, copied }) {
   const canvasRef = useRef(null);
   const [error, setError] = useState('');
 
@@ -172,7 +172,14 @@ function QrCard({ title, subtitle, value, qrValue, onCopy, copied }) {
         ? h('p', { style: { color:'#0f172a', fontFamily:"'DM Mono', monospace", fontSize:12, textAlign:'center', maxWidth:220, lineHeight:1.6 } }, error)
         : h('canvas', { ref: canvasRef, width:220, height:220, style: { width:'100%', maxWidth:220, height:'auto', display:'block' } })
     ),
-    h('div', { className: 'inline-actions', style: { marginTop:12 } },
+    h('div', { className: 'inline-actions qr-card__actions', style: { marginTop:12 } },
+      idValue && h('div', {
+        className: 'qr-id-chip',
+        title: idValue
+      },
+        h('span', { className: 'qr-id-chip__label' }, 'ID'),
+        h('span', { className: 'qr-id-chip__value' }, idValue)
+      ),
       h('button', {
         onClick: onCopy,
         disabled: !value,
@@ -412,7 +419,7 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
   const frameRef = useRef(null);
   const streamRef = useRef(null);
   const onScanRef = useRef(onScan);
-  const [statusText, setStatusText] = useState('Requesting camera access...');
+  const [manualValue, setManualValue] = useState('');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -431,7 +438,6 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
     }
 
     if (enabled === false) {
-      setStatusText('');
       setError('');
       return function() {
         if (frameRef.current) cancelAnimationFrame(frameRef.current);
@@ -447,19 +453,16 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
     async function start() {
       if (!window.isSecureContext) {
         setError('Camera scanning requires HTTPS or localhost. This page is not running in a secure context.');
-        setStatusText('');
         return;
       }
 
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setError('Camera APIs are unavailable in this browser context.');
-        setStatusText('');
         return;
       }
 
       if (!window.jsQR) {
         setError('QR scanning failed to load.');
-        setStatusText('');
         return;
       }
 
@@ -495,8 +498,6 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
           await video.play();
         } catch (err) {}
 
-        setStatusText('Point the camera at the sender QR code.');
-
         function scanFrame() {
           var liveVideo = videoRef.current;
           var canvas = canvasRef.current;
@@ -522,7 +523,6 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
               if (videoRef.current) {
                 videoRef.current.srcObject = null;
               }
-              setStatusText('QR code detected. Connecting...');
               onScanRef.current(code.data);
               return;
             }
@@ -541,7 +541,6 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
         } else {
           setError('Unable to open the camera preview.');
         }
-        setStatusText('');
       }
     }
 
@@ -558,6 +557,13 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
       streamRef.current = null;
     };
   }, [enabled]);
+
+  function submitManualConnect(e) {
+    e.preventDefault();
+    var nextValue = manualValue.trim();
+    if (!nextValue) return;
+    onScanRef.current(nextValue);
+  }
 
   return h('div', { className: 'surface-card', style: { animation:'fadeUp 0.35s ease' } },
     h('h3', { style: { fontFamily:"'Outfit', sans-serif", fontWeight:600, fontSize:24, lineHeight:1.1, marginBottom:8 } }, title),
@@ -585,14 +591,29 @@ function ScannerPanel({ title, subtitle, onScan, enabled }) {
           ]
     ),
     h('canvas', { ref: canvasRef, style: { display:'none' } }),
-    h('div', {
-      style: {
-        marginTop:16, padding:'12px 14px', borderRadius:12,
-        border:'1px solid var(--border)', background:'var(--surface-2)',
-        color:error ? 'var(--danger)' : 'var(--text-dim)',
-        fontFamily:"'DM Mono', monospace", fontSize:11, lineHeight:1.6
-      }
-    }, error || statusText)
+    h('form', {
+      className: 'manual-connect-form',
+      onSubmit: submitManualConnect
+    },
+      h('input', {
+        type: 'text',
+        className: 'manual-connect-input',
+        value: manualValue,
+        onChange: function(e) { setManualValue(e.target.value); },
+        placeholder: '(Optionally) Enter sender ID manually',
+        'aria-label': 'Sender ID',
+        autoCapitalize: 'none',
+        autoCorrect: 'off',
+        autoComplete: 'off',
+        spellCheck: false,
+        disabled: enabled === false
+      }),
+      h('button', {
+        type: 'submit',
+        className: 'primary-button',
+        disabled: enabled === false || !manualValue.trim()
+      }, 'Connect')
+    )
   );
 }
 
